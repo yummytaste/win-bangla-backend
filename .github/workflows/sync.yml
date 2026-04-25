@@ -2,14 +2,29 @@ name: Lottery Sync Automation
 
 on:
   schedule:
-    - cron: '55 7 * * *'   # 1:25 PM IST
-    - cron: '25 13 * * *'  # 6:55 PM IST
-    - cron: '35 15 * * *'  # 9:05 PM IST
+    # 1PM retry windows
+    - cron: '50 7 * * *'   # 1:20 PM IST
+    - cron: '0 8 * * *'    # 1:30 PM IST
+    - cron: '15 8 * * *'   # 1:45 PM IST
+
+    # 6PM retry windows
+    - cron: '50 12 * * *'  # 6:20 PM IST
+    - cron: '5 13 * * *'   # 6:35 PM IST
+    - cron: '20 13 * * *'  # 6:50 PM IST
+
+    # 8PM retry windows
+    - cron: '55 14 * * *'  # 8:25 PM IST
+    - cron: '10 15 * * *'  # 8:40 PM IST
+    - cron: '25 15 * * *'  # 8:55 PM IST
+
   workflow_dispatch:
 
 jobs:
   run-sync:
     runs-on: ubuntu-latest
+
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout Code
@@ -26,27 +41,36 @@ jobs:
           pip install -r backend/requirements.txt
 
       - name: Run 1PM Sync
-        if: github.event.schedule == '40 7 * * *'
+        if: |
+          github.event.schedule == '50 7 * * *' ||
+          github.event.schedule == '0 8 * * *' ||
+          github.event.schedule == '15 8 * * *'
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
           ONLY_DRAW_CODE: 1PM
         run: python backend/sync_results.py
 
       - name: Run 6PM Sync
-        if: github.event.schedule == '40 12 * * *'
+        if: |
+          github.event.schedule == '50 12 * * *' ||
+          github.event.schedule == '5 13 * * *' ||
+          github.event.schedule == '20 13 * * *'
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
           ONLY_DRAW_CODE: 6PM
         run: python backend/sync_results.py
 
       - name: Run 8PM Sync
-        if: github.event.schedule == '40 14 * * *'
+        if: |
+          github.event.schedule == '55 14 * * *' ||
+          github.event.schedule == '10 15 * * *' ||
+          github.event.schedule == '25 15 * * *'
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
           ONLY_DRAW_CODE: 8PM
         run: python backend/sync_results.py
 
-      - name: Manual Run All
+      - name: Manual Run
         if: github.event_name == 'workflow_dispatch'
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
