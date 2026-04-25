@@ -3,12 +3,14 @@ import re
 import json
 from datetime import datetime
 from urllib.parse import urljoin
+from io import BytesIO
 
 import requests
 from bs4 import BeautifulSoup
 import firebase_admin
 from firebase_admin import credentials, firestore, storage, messaging
 from google.cloud.firestore_v1.base_query import FieldFilter
+from pypdf import PdfReader
 
 BASE_URL = "https://lotterysambadresult.in/"
 BUCKET_NAME = "grozip-pro.firebasestorage.app"
@@ -30,10 +32,6 @@ HEADERS = {
     "Referer": BASE_URL,
 }
 
-
-# =========================
-# FIREBASE INIT
-# =========================
 firebase_key = os.environ.get("FIREBASE_KEY")
 
 if firebase_key:
@@ -49,9 +47,6 @@ db = firestore.client()
 bucket = storage.bucket()
 
 
-# =========================
-# HELPERS
-# =========================
 def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
 
@@ -184,6 +179,100 @@ def send_result_notification(date_str: str, draw_label: str):
     print(f"[INFO] Notification sent to {success_count} device(s) for {draw_label}")
 
 
+def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
+    try:
+        reader = PdfReader(BytesIO(pdf_bytes))
+        texts = []
+        for page in reader.pages:
+            texts.append(page.extract_text() or "")
+        return "\n".join(texts)
+    except Exception as e:
+        print(f"[WARN] PDF text extract failed: {e}")
+        return ""
+
+
+def clean_number_list(numbers):
+    clean = []
+    seen = set()
+
+    for n in numbers:
+        n = str(n).strip()
+        if n not in seen:
+            clean.append(n)
+            seen.add(n)
+
+    return clean
+
+
+def parse_prize_numbers(raw_text: str):
+    text = raw_text or ""
+
+    parsed = {
+        "first_prize_series": "",
+        "first_prize_number": "",
+        "consolation_number": "",
+        "second_prize": [],
+        "third_prize": [],
+        "fourth_prize": [],
+        "fifth_prize": [],
+        "prize_amounts": {
+            "first": "₹1 Crore",
+            "consolation": "₹1000",
+            "second": "₹10000",
+            "third": "₹500",
+            "fourth": "₹250",
+            "fifth": "₹120",
+        },
+        "match_ready": False,
+        "parsed_at": firestore.SERVER_TIMESTAMP,
+    }
+
+    series_match = re.search(r"\b([0-9]{2}[A-Z])\s*[- ]?\s*([0-9]{5})\b", text.upper())
+    if series_match:
+        parsed["first_prize_series"] = series_match.group(1)
+        parsed["first_prize_number"] = series_match.group(2)
+        parsed["consolation_number"] = series_match.group(2)
+
+    five_digit_numbers = re.findall(r"\b\d{5}\b", text)
+    five_digit_numbers = clean_number_list(five_digit_numbers)
+
+    if parsed["first_prize_number"]:
+        five_digit_numbers = [
+            n for n in five_digit_numbers
+            if n != parsed["first_prize_number"]
+        ]
+
+    parsed["second_prize"] = five_digit_numbers[:10]
+
+    four_digit_numbers = re.findall(r"\b\d{4}\b", text)
+    four_digit_numbers = [
+        n for n in four_digit_numbers
+        if not n.startswith("202") and n not in ("2025", "2026")
+    ]
+    four_digit_numbers = clean_number_list(four_digit_numbers)
+
+    if len(four_digit_numbers) >= 120:
+        parsed["fifth_prize"] = four_digit_numbers[:100]
+        parsed["third_prize"] = four_digit_numbers[100:110]
+        parsed["fourth_prize"] = four_digit_numbers[110:120]
+    elif len(four_digit_numbers) >= 20:
+        parsed["third_prize"] = four_digit_numbers[:10]
+        parsed["fourth_prize"] = four_digit_numbers[10:20]
+        parsed["fifth_prize"] = four_digit_numbers[20:]
+    else:
+        parsed["fifth_prize"] = four_digit_numbers
+
+    parsed["match_ready"] = bool(
+        parsed["first_prize_number"]
+        or parsed["second_prize"]
+        or parsed["third_prize"]
+        or parsed["fourth_prize"]
+        or parsed["fifth_prize"]
+    )
+
+    return parsed
+
+
 def save_result_doc(
     date_str: str,
     draw_label: str,
@@ -194,6 +283,7 @@ def save_result_doc(
     pdf_storage_path: str | None,
     pdf_url: str | None,
     source_page: str,
+    parsed_numbers: dict | None = None,
 ):
     doc_id = f"{date_str}_{draw_code}"
     doc_ref = db.collection("results").document(doc_id)
@@ -206,7 +296,7 @@ def save_result_doc(
         old_data = existing.to_dict() or {}
         created_at_value = old_data.get("created_at", firestore.SERVER_TIMESTAMP)
 
-    doc_ref.set({
+    data = {
         "date": date_str,
         "time": draw_label,
         "draw_code": draw_code,
@@ -221,7 +311,12 @@ def save_result_doc(
         "status": "available",
         "updated_at": firestore.SERVER_TIMESTAMP,
         "created_at": created_at_value,
-    }, merge=True)
+    }
+
+    if parsed_numbers:
+        data.update(parsed_numbers)
+
+    doc_ref.set(data, merge=True)
 
     return not already_exists
 
@@ -261,7 +356,6 @@ def extract_best_poster_and_pdf(page_html: str, page_url: str, draw_label: str):
         return None, None
 
     soup = BeautifulSoup(page_html, "html.parser")
-
     page_text = normalize_text(soup.get_text(" ", strip=True))
 
     poster_url = None
@@ -337,6 +431,9 @@ def sync_for_today():
             pdf_storage_path = None
             pdf_public_url = None
 
+            parsed_numbers = None
+            pdf_text = ""
+
             if poster_source_url:
                 content, ext, content_type = download_file(poster_source_url)
 
@@ -355,6 +452,8 @@ def sync_for_today():
                 content, ext, content_type = download_file(pdf_source_url)
 
                 if ext == "pdf":
+                    pdf_text = extract_text_from_pdf_bytes(content)
+
                     pdf_storage_path, pdf_public_url = upload_to_storage(
                         date_str=date_str,
                         draw_code=draw_code,
@@ -363,6 +462,12 @@ def sync_for_today():
                         content_type=content_type,
                         kind="pdf",
                     )
+
+            if pdf_text:
+                parsed_numbers = parse_prize_numbers(pdf_text)
+            else:
+                fallback_text = BeautifulSoup(page_html, "html.parser").get_text("\n", strip=True)
+                parsed_numbers = parse_prize_numbers(fallback_text)
 
             if not poster_public_url and not pdf_public_url:
                 print(f"[MISS] {date_str} {draw_label} -> no valid {draw_label} result found")
@@ -378,6 +483,7 @@ def sync_for_today():
                 pdf_storage_path=pdf_storage_path,
                 pdf_url=pdf_public_url,
                 source_page=page_url,
+                parsed_numbers=parsed_numbers,
             )
 
             synced += 1
@@ -385,7 +491,8 @@ def sync_for_today():
             print(
                 f"[OK] {date_str} {draw_label} -> "
                 f"poster={poster_public_url or 'none'} | "
-                f"pdf={pdf_public_url or 'none'}"
+                f"pdf={pdf_public_url or 'none'} | "
+                f"match_ready={parsed_numbers.get('match_ready') if parsed_numbers else False}"
             )
 
             if is_new_doc:
