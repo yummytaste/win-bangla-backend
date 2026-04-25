@@ -2,9 +2,9 @@ name: Lottery Sync Automation
 
 on:
   schedule:
-    - cron: '40 7 * * *'   # 1:10 PM IST
-    - cron: '40 12 * * *'  # 6:10 PM IST
-    - cron: '40 14 * * *'  # 8:10 PM IST
+    - cron: '55 7 * * *'   # 1:25 PM IST
+    - cron: '25 13 * * *'  # 6:55 PM IST
+    - cron: '35 15 * * *'  # 9:05 PM IST
   workflow_dispatch:
 
 jobs:
