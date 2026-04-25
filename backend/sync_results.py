@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 from datetime import datetime
 from urllib.parse import urljoin
 from io import BytesIO
@@ -39,9 +40,7 @@ if firebase_key:
 else:
     cred = credentials.Certificate("serviceAccountKey.json")
 
-firebase_admin.initialize_app(cred, {
-    "storageBucket": BUCKET_NAME
-})
+firebase_admin.initialize_app(cred, {"storageBucket": BUCKET_NAME})
 
 db = firestore.client()
 bucket = storage.bucket()
@@ -58,16 +57,12 @@ def today_date() -> str:
 def detect_file_type(content: bytes):
     if len(content) >= 4 and content[:4] == b"%PDF":
         return "pdf", "application/pdf"
-
     if len(content) >= 3 and content[:3] == b"\xff\xd8\xff":
         return "jpg", "image/jpeg"
-
     if len(content) >= 8 and content[:8] == b"\x89PNG\r\n\x1a\n":
         return "png", "image/png"
-
     if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
         return "webp", "image/webp"
-
     return None, None
 
 
@@ -75,6 +70,19 @@ def fetch_page(url: str) -> str:
     response = requests.get(url, headers=HEADERS, timeout=25)
     response.raise_for_status()
     return response.text
+
+
+def fetch_page_with_retry(url: str, retries: int = 3, delay_seconds: int = 20) -> str:
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            return fetch_page(url)
+        except Exception as e:
+            last_error = e
+            print(f"[RETRY] page fetch attempt {attempt}/{retries} failed -> {e}")
+            if attempt < retries:
+                time.sleep(delay_seconds)
+    raise last_error
 
 
 def download_file(url: str):
@@ -128,7 +136,6 @@ def send_result_notification(date_str: str, draw_label: str):
     )
 
     tokens = []
-
     for doc in tokens_snapshot:
         data = doc.to_dict() or {}
         token = data.get("token")
@@ -162,10 +169,8 @@ def send_result_notification(date_str: str, draw_label: str):
                     ),
                 ),
             )
-
             messaging.send(message)
             success_count += 1
-
         except Exception as e:
             print(f"[WARN] Notification failed: {e}")
             invalid_tokens.append(token)
@@ -194,13 +199,11 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
 def clean_number_list(numbers):
     clean = []
     seen = set()
-
     for n in numbers:
         n = str(n).strip()
         if n not in seen:
             clean.append(n)
             seen.add(n)
-
     return clean
 
 
@@ -233,14 +236,10 @@ def parse_prize_numbers(raw_text: str):
         parsed["first_prize_number"] = series_match.group(2)
         parsed["consolation_number"] = series_match.group(2)
 
-    five_digit_numbers = re.findall(r"\b\d{5}\b", text)
-    five_digit_numbers = clean_number_list(five_digit_numbers)
+    five_digit_numbers = clean_number_list(re.findall(r"\b\d{5}\b", text))
 
     if parsed["first_prize_number"]:
-        five_digit_numbers = [
-            n for n in five_digit_numbers
-            if n != parsed["first_prize_number"]
-        ]
+        five_digit_numbers = [n for n in five_digit_numbers if n != parsed["first_prize_number"]]
 
     parsed["second_prize"] = five_digit_numbers[:10]
 
@@ -290,11 +289,10 @@ def save_result_doc(
     existing = doc_ref.get()
 
     already_exists = existing.exists
+    old_data = existing.to_dict() or {}
 
-    created_at_value = firestore.SERVER_TIMESTAMP
-    if already_exists:
-        old_data = existing.to_dict() or {}
-        created_at_value = old_data.get("created_at", firestore.SERVER_TIMESTAMP)
+    created_at_value = old_data.get("created_at", firestore.SERVER_TIMESTAMP)
+    notification_sent = old_data.get("notification_sent", False)
 
     data = {
         "date": date_str,
@@ -318,21 +316,28 @@ def save_result_doc(
 
     doc_ref.set(data, merge=True)
 
-    return not already_exists
+    return {
+        "is_new_doc": not already_exists,
+        "notification_sent": notification_sent,
+        "doc_ref": doc_ref,
+    }
+
+
+def mark_notification_sent(doc_ref):
+    doc_ref.set({
+        "notification_sent": True,
+        "notification_sent_at": firestore.SERVER_TIMESTAMP,
+    }, merge=True)
 
 
 def looks_like_matching_draw_page(page_url: str, draw_label: str) -> bool:
     page_url = page_url.lower()
-
     if draw_label == "1 PM":
         return "1-pm" in page_url
-
     if draw_label == "6 PM":
         return "6-pm" in page_url
-
     if draw_label == "8 PM":
         return "8-pm" in page_url
-
     return False
 
 
@@ -346,7 +351,6 @@ def is_bad_placeholder(text: str) -> bool:
         "no result",
         "not published",
     ]
-
     text = normalize_text(text)
     return any(word in text for word in bad_words)
 
@@ -365,7 +369,6 @@ def extract_best_poster_and_pdf(page_html: str, page_url: str, draw_label: str):
         src = urljoin(page_url, img.get("src", "").strip())
         alt = img.get("alt", "")
         parent_text = img.parent.get_text(" ", strip=True) if img.parent else ""
-
         combined = f"{src} {alt} {parent_text}"
 
         if is_bad_placeholder(combined):
@@ -386,7 +389,6 @@ def extract_best_poster_and_pdf(page_html: str, page_url: str, draw_label: str):
         href = urljoin(page_url, a.get("href", "").strip())
         text = a.get_text(" ", strip=True)
         parent_text = a.parent.get_text(" ", strip=True) if a.parent else ""
-
         combined = f"{href} {text} {parent_text}"
 
         if is_bad_placeholder(combined):
@@ -416,7 +418,7 @@ def sync_for_today():
             continue
 
         try:
-            page_html = fetch_page(page_url)
+            page_html = fetch_page_with_retry(page_url)
 
             poster_source_url, pdf_source_url = extract_best_poster_and_pdf(
                 page_html=page_html,
@@ -427,16 +429,13 @@ def sync_for_today():
             poster_storage_path = None
             poster_public_url = None
             poster_type = None
-
             pdf_storage_path = None
             pdf_public_url = None
-
             parsed_numbers = None
             pdf_text = ""
 
             if poster_source_url:
                 content, ext, content_type = download_file(poster_source_url)
-
                 if ext in ("jpg", "png", "webp"):
                     poster_storage_path, poster_public_url = upload_to_storage(
                         date_str=date_str,
@@ -450,10 +449,8 @@ def sync_for_today():
 
             if pdf_source_url:
                 content, ext, content_type = download_file(pdf_source_url)
-
                 if ext == "pdf":
                     pdf_text = extract_text_from_pdf_bytes(content)
-
                     pdf_storage_path, pdf_public_url = upload_to_storage(
                         date_str=date_str,
                         draw_code=draw_code,
@@ -473,7 +470,7 @@ def sync_for_today():
                 print(f"[MISS] {date_str} {draw_label} -> no valid {draw_label} result found")
                 continue
 
-            is_new_doc = save_result_doc(
+            save_info = save_result_doc(
                 date_str=date_str,
                 draw_label=draw_label,
                 draw_code=draw_code,
@@ -495,8 +492,9 @@ def sync_for_today():
                 f"match_ready={parsed_numbers.get('match_ready') if parsed_numbers else False}"
             )
 
-            if is_new_doc:
+            if not save_info["notification_sent"]:
                 send_result_notification(date_str, draw_label)
+                mark_notification_sent(save_info["doc_ref"])
 
         except Exception as e:
             print(f"[ERROR] {date_str} {draw_label} -> {e}")
