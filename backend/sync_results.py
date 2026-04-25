@@ -313,9 +313,13 @@ def extract_best_poster_and_pdf(page_html: str, page_url: str, draw_label: str):
 def sync_for_today():
     date_str = today_date()
     synced = 0
+    only_draw_code = os.environ.get("ONLY_DRAW_CODE", "").strip().upper()
 
     for draw_label, page_url in DRAW_PAGES.items():
         draw_code = DRAW_CODES[draw_label]
+
+        if only_draw_code and draw_code != only_draw_code:
+            continue
 
         try:
             page_html = fetch_page(page_url)
