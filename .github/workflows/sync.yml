@@ -5,7 +5,6 @@ on:
     - cron: '40 7 * * *'   # 1:10 PM IST
     - cron: '40 12 * * *'  # 6:10 PM IST
     - cron: '40 14 * * *'  # 8:10 PM IST
-
   workflow_dispatch:
 
 jobs:
@@ -26,8 +25,29 @@ jobs:
           pip install --upgrade pip
           pip install -r backend/requirements.txt
 
-      - name: Run Script
+      - name: Run 1PM Sync
+        if: github.event.schedule == '40 7 * * *'
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
-        run: |
-          python backend/sync_results.py
+          ONLY_DRAW_CODE: 1PM
+        run: python backend/sync_results.py
+
+      - name: Run 6PM Sync
+        if: github.event.schedule == '40 12 * * *'
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
+          ONLY_DRAW_CODE: 6PM
+        run: python backend/sync_results.py
+
+      - name: Run 8PM Sync
+        if: github.event.schedule == '40 14 * * *'
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
+          ONLY_DRAW_CODE: 8PM
+        run: python backend/sync_results.py
+
+      - name: Manual Run All
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
+        run: python backend/sync_results.py
