@@ -2,19 +2,20 @@ name: Lottery Sync Automation
 
 on:
   schedule:
-    # 1PM retry windows
+    # 1PM result
+    - cron: '40 7 * * *'   # 1:10 PM IST
     - cron: '50 7 * * *'   # 1:20 PM IST
-    - cron: '15 8 * * *'   # 1:45 PM IST
+    - cron: '5 8 * * *'    # 1:35 PM IST
 
-    # 6PM retry windows
+    # 6PM result
+    - cron: '40 12 * * *'  # 6:10 PM IST
     - cron: '50 12 * * *'  # 6:20 PM IST
-    - cron: '30 13 * * *'  # 7:00 PM IST
-    - cron: '55 13 * * *'  # 7:25 PM IST
+    - cron: '10 13 * * *'  # 6:40 PM IST
 
-    # 8PM retry windows
+    # 8PM result
+    - cron: '40 14 * * *'  # 8:10 PM IST
     - cron: '50 14 * * *'  # 8:20 PM IST
-    - cron: '25 15 * * *'  # 8:55 PM IST
-    - cron: '35 15 * * *'  # 9:05 PM IST
+    - cron: '10 15 * * *'  # 8:40 PM IST
 
   workflow_dispatch:
     inputs:
@@ -54,8 +55,9 @@ jobs:
 
       - name: Run 1PM Sync
         if: |
+          github.event.schedule == '40 7 * * *' ||
           github.event.schedule == '50 7 * * *' ||
-          github.event.schedule == '15 8 * * *'
+          github.event.schedule == '5 8 * * *'
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
           ONLY_DRAW_CODE: 1PM
@@ -63,9 +65,9 @@ jobs:
 
       - name: Run 6PM Sync
         if: |
+          github.event.schedule == '40 12 * * *' ||
           github.event.schedule == '50 12 * * *' ||
-          github.event.schedule == '30 13 * * *' ||
-          github.event.schedule == '55 13 * * *'
+          github.event.schedule == '10 13 * * *'
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
           ONLY_DRAW_CODE: 6PM
@@ -73,9 +75,9 @@ jobs:
 
       - name: Run 8PM Sync
         if: |
+          github.event.schedule == '40 14 * * *' ||
           github.event.schedule == '50 14 * * *' ||
-          github.event.schedule == '25 15 * * *' ||
-          github.event.schedule == '35 15 * * *'
+          github.event.schedule == '10 15 * * *'
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
           ONLY_DRAW_CODE: 8PM
