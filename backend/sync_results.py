@@ -12,6 +12,8 @@ import firebase_admin
 from firebase_admin import credentials, firestore, storage, messaging
 from google.cloud.firestore_v1.base_query import FieldFilter
 from pypdf import PdfReader
+from PIL import Image
+import pytesseract
 
 BASE_URL = "https://lotterysambadresult.in/"
 BUCKET_NAME = "grozip-pro.firebasestorage.app"
@@ -109,14 +111,7 @@ def download_file(url: str):
     return content, None, None
 
 
-def upload_to_storage(
-    date_str: str,
-    draw_code: str,
-    content: bytes,
-    ext: str,
-    content_type: str,
-    kind: str,
-):
+def upload_to_storage(date_str, draw_code, content, ext, content_type, kind):
     storage_path = f"results/{date_str}/{draw_code}_{kind}.{ext}"
     blob = bucket.blob(storage_path)
     blob.upload_from_string(content, content_type=content_type)
@@ -203,6 +198,25 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
         return ""
 
 
+def extract_text_from_image_bytes(image_bytes: bytes) -> str:
+    try:
+        image = Image.open(BytesIO(image_bytes)).convert("RGB")
+
+        width, height = image.size
+        scale = 2
+        image = image.resize((width * scale, height * scale))
+
+        text = pytesseract.image_to_string(
+            image,
+            config="--psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789₹/-:., ",
+        )
+
+        return text
+    except Exception as e:
+        print(f"[WARN] OCR image extract failed: {e}")
+        return ""
+
+
 def clean_number_list(numbers):
     clean = []
     seen = set()
@@ -239,14 +253,16 @@ def empty_prize_numbers():
     }
 
 
-def parse_prize_numbers(raw_text: str):
+def parse_prize_numbers(raw_text: str, source: str):
     text = raw_text or ""
     parsed = empty_prize_numbers()
-    parsed["parsed_source"] = "pdf"
+    parsed["parsed_source"] = source
+
+    text_upper = text.upper()
 
     series_match = re.search(
         r"\b([0-9]{2}[A-Z])\s*[- ]?\s*([0-9]{5})\b",
-        text.upper(),
+        text_upper,
     )
 
     if series_match:
@@ -296,16 +312,16 @@ def parse_prize_numbers(raw_text: str):
 
 
 def save_result_doc(
-    date_str: str,
-    draw_label: str,
-    draw_code: str,
-    poster_storage_path: str | None,
-    poster_url: str | None,
-    poster_type: str | None,
-    pdf_storage_path: str | None,
-    pdf_url: str | None,
-    source_page: str,
-    parsed_numbers: dict | None = None,
+    date_str,
+    draw_label,
+    draw_code,
+    poster_storage_path,
+    poster_url,
+    poster_type,
+    pdf_storage_path,
+    pdf_url,
+    source_page,
+    parsed_numbers=None,
 ):
     doc_id = f"{date_str}_{draw_code}"
     doc_ref = db.collection("results").document(doc_id)
@@ -355,14 +371,12 @@ def mark_notification_sent(doc_ref):
 
 def looks_like_matching_draw_page(page_url: str, draw_label: str) -> bool:
     page_url = page_url.lower()
-
     if draw_label == "1 PM":
         return "1-pm" in page_url
     if draw_label == "6 PM":
         return "6-pm" in page_url
     if draw_label == "8 PM":
         return "8-pm" in page_url
-
     return False
 
 
@@ -374,7 +388,6 @@ def is_bad_placeholder(text: str) -> bool:
         "no result",
         "not published",
     ]
-
     text = normalize_text(text)
     return any(word in text for word in bad_words)
 
@@ -471,11 +484,14 @@ def sync_for_today():
             pdf_storage_path = None
             pdf_public_url = None
             pdf_text = ""
+            ocr_text = ""
             parsed_numbers = empty_prize_numbers()
+            poster_content = None
 
             if poster_source_url:
                 content, ext, content_type = download_file(poster_source_url)
                 if ext in ("jpg", "png", "webp"):
+                    poster_content = content
                     poster_storage_path, poster_public_url = upload_to_storage(
                         date_str=date_str,
                         draw_code=draw_code,
@@ -488,10 +504,8 @@ def sync_for_today():
 
             if pdf_source_url:
                 content, ext, content_type = download_file(pdf_source_url)
-
                 if ext == "pdf":
                     pdf_text = extract_text_from_pdf_bytes(content)
-
                     pdf_storage_path, pdf_public_url = upload_to_storage(
                         date_str=date_str,
                         draw_code=draw_code,
@@ -502,10 +516,15 @@ def sync_for_today():
                     )
 
             if pdf_text.strip():
-                parsed_numbers = parse_prize_numbers(pdf_text)
+                parsed_numbers = parse_prize_numbers(pdf_text, "pdf")
+            elif poster_content:
+                ocr_text = extract_text_from_image_bytes(poster_content)
+                parsed_numbers = parse_prize_numbers(ocr_text, "poster_ocr")
             else:
                 parsed_numbers = empty_prize_numbers()
-                parsed_numbers["parsed_source"] = "no_pdf"
+                parsed_numbers["parsed_source"] = "no_pdf_no_poster"
+
+            parsed_numbers["ocr_text_preview"] = ocr_text[:1000] if ocr_text else ""
 
             if not poster_public_url and not pdf_public_url:
                 print(f"[MISS] {date_str} {draw_label} -> no valid {draw_label} result found")
@@ -530,6 +549,7 @@ def sync_for_today():
                 f"[OK] {date_str} {draw_label} -> "
                 f"poster={poster_public_url or 'none'} | "
                 f"pdf={pdf_public_url or 'none'} | "
+                f"parsed_source={parsed_numbers.get('parsed_source')} | "
                 f"match_ready={parsed_numbers.get('match_ready')}"
             )
 
