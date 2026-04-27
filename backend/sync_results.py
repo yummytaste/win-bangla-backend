@@ -109,7 +109,14 @@ def download_file(url: str):
     return content, None, None
 
 
-def upload_to_storage(date_str: str, draw_code: str, content: bytes, ext: str, content_type: str, kind: str):
+def upload_to_storage(
+    date_str: str,
+    draw_code: str,
+    content: bytes,
+    ext: str,
+    content_type: str,
+    kind: str,
+):
     storage_path = f"results/{date_str}/{draw_code}_{kind}.{ext}"
     blob = bucket.blob(storage_path)
     blob.upload_from_string(content, content_type=content_type)
@@ -199,18 +206,18 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
 def clean_number_list(numbers):
     clean = []
     seen = set()
+
     for n in numbers:
         n = str(n).strip()
         if n not in seen:
             clean.append(n)
             seen.add(n)
+
     return clean
 
 
-def parse_prize_numbers(raw_text: str):
-    text = raw_text or ""
-
-    parsed = {
+def empty_prize_numbers():
+    return {
         "first_prize_series": "",
         "first_prize_number": "",
         "consolation_number": "",
@@ -227,10 +234,21 @@ def parse_prize_numbers(raw_text: str):
             "fifth": "₹120",
         },
         "match_ready": False,
+        "parsed_source": "none",
         "parsed_at": firestore.SERVER_TIMESTAMP,
     }
 
-    series_match = re.search(r"\b([0-9]{2}[A-Z])\s*[- ]?\s*([0-9]{5})\b", text.upper())
+
+def parse_prize_numbers(raw_text: str):
+    text = raw_text or ""
+    parsed = empty_prize_numbers()
+    parsed["parsed_source"] = "pdf"
+
+    series_match = re.search(
+        r"\b([0-9]{2}[A-Z])\s*[- ]?\s*([0-9]{5})\b",
+        text.upper(),
+    )
+
     if series_match:
         parsed["first_prize_series"] = series_match.group(1)
         parsed["first_prize_number"] = series_match.group(2)
@@ -239,7 +257,10 @@ def parse_prize_numbers(raw_text: str):
     five_digit_numbers = clean_number_list(re.findall(r"\b\d{5}\b", text))
 
     if parsed["first_prize_number"]:
-        five_digit_numbers = [n for n in five_digit_numbers if n != parsed["first_prize_number"]]
+        five_digit_numbers = [
+            n for n in five_digit_numbers
+            if n != parsed["first_prize_number"]
+        ]
 
     parsed["second_prize"] = five_digit_numbers[:10]
 
@@ -259,14 +280,16 @@ def parse_prize_numbers(raw_text: str):
         parsed["fourth_prize"] = four_digit_numbers[10:20]
         parsed["fifth_prize"] = four_digit_numbers[20:]
     else:
-        parsed["fifth_prize"] = four_digit_numbers
+        parsed["fifth_prize"] = []
 
     parsed["match_ready"] = bool(
         parsed["first_prize_number"]
-        or parsed["second_prize"]
-        or parsed["third_prize"]
-        or parsed["fourth_prize"]
-        or parsed["fifth_prize"]
+        and (
+            parsed["second_prize"]
+            or parsed["third_prize"]
+            or parsed["fourth_prize"]
+            or parsed["fifth_prize"]
+        )
     )
 
     return parsed
@@ -332,25 +355,26 @@ def mark_notification_sent(doc_ref):
 
 def looks_like_matching_draw_page(page_url: str, draw_label: str) -> bool:
     page_url = page_url.lower()
+
     if draw_label == "1 PM":
         return "1-pm" in page_url
     if draw_label == "6 PM":
         return "6-pm" in page_url
     if draw_label == "8 PM":
         return "8-pm" in page_url
+
     return False
 
 
 def is_bad_placeholder(text: str) -> bool:
     bad_words = [
         "coming soon",
-        "coming",
-        "soon",
         "placeholder",
         "default",
         "no result",
         "not published",
     ]
+
     text = normalize_text(text)
     return any(word in text for word in bad_words)
 
@@ -385,6 +409,8 @@ def extract_best_poster_and_pdf(page_html: str, page_url: str, draw_label: str):
             poster_url = src
             break
 
+    pdf_candidates = []
+
     for a in soup.find_all("a", href=True):
         href = urljoin(page_url, a.get("href", "").strip())
         text = a.get_text(" ", strip=True)
@@ -396,9 +422,22 @@ def extract_best_poster_and_pdf(page_html: str, page_url: str, draw_label: str):
 
         combined_norm = normalize_text(combined)
 
-        if "download" in combined_norm or href.lower().endswith(".pdf"):
-            pdf_url = href
-            break
+        if (
+            ".pdf" in href.lower()
+            or "pdf" in combined_norm
+            or "download" in combined_norm
+            or "result download" in combined_norm
+        ):
+            pdf_candidates.append(href)
+
+    for candidate in pdf_candidates:
+        try:
+            content, ext, _ = download_file(candidate)
+            if ext == "pdf" and content[:4] == b"%PDF":
+                pdf_url = candidate
+                break
+        except Exception as e:
+            print(f"[WARN] PDF candidate failed -> {candidate} | {e}")
 
     if is_bad_placeholder(page_text) and not pdf_url:
         return None, None
@@ -431,8 +470,8 @@ def sync_for_today():
             poster_type = None
             pdf_storage_path = None
             pdf_public_url = None
-            parsed_numbers = None
             pdf_text = ""
+            parsed_numbers = empty_prize_numbers()
 
             if poster_source_url:
                 content, ext, content_type = download_file(poster_source_url)
@@ -449,8 +488,10 @@ def sync_for_today():
 
             if pdf_source_url:
                 content, ext, content_type = download_file(pdf_source_url)
+
                 if ext == "pdf":
                     pdf_text = extract_text_from_pdf_bytes(content)
+
                     pdf_storage_path, pdf_public_url = upload_to_storage(
                         date_str=date_str,
                         draw_code=draw_code,
@@ -460,11 +501,11 @@ def sync_for_today():
                         kind="pdf",
                     )
 
-            if pdf_text:
+            if pdf_text.strip():
                 parsed_numbers = parse_prize_numbers(pdf_text)
             else:
-                fallback_text = BeautifulSoup(page_html, "html.parser").get_text("\n", strip=True)
-                parsed_numbers = parse_prize_numbers(fallback_text)
+                parsed_numbers = empty_prize_numbers()
+                parsed_numbers["parsed_source"] = "no_pdf"
 
             if not poster_public_url and not pdf_public_url:
                 print(f"[MISS] {date_str} {draw_label} -> no valid {draw_label} result found")
@@ -489,12 +530,21 @@ def sync_for_today():
                 f"[OK] {date_str} {draw_label} -> "
                 f"poster={poster_public_url or 'none'} | "
                 f"pdf={pdf_public_url or 'none'} | "
-                f"match_ready={parsed_numbers.get('match_ready') if parsed_numbers else False}"
+                f"match_ready={parsed_numbers.get('match_ready')}"
             )
 
-            if not save_info["notification_sent"]:
+            if (
+                parsed_numbers.get("match_ready") is True
+                and not save_info["notification_sent"]
+            ):
                 send_result_notification(date_str, draw_label)
                 mark_notification_sent(save_info["doc_ref"])
+            else:
+                print(
+                    f"[INFO] Notification skipped for {draw_label} | "
+                    f"match_ready={parsed_numbers.get('match_ready')} | "
+                    f"already_sent={save_info['notification_sent']}"
+                )
 
         except Exception as e:
             print(f"[ERROR] {date_str} {draw_label} -> {e}")
