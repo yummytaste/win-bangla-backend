@@ -2,3 +2,5 @@ firebase-admin
 requests
 beautifulsoup4
 pypdf
+pillow
+pytesseract
