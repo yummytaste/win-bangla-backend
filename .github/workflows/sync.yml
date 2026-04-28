@@ -2,47 +2,105 @@ name: Lottery Sync Automation
 
 on:
   schedule:
-    # 1:15, 1:20, 1:25 PM IST
+    # 🕐 1:15, 1:20, 1:25 PM IST
     - cron: '45 7 * * *'
     - cron: '50 7 * * *'
     - cron: '55 7 * * *'
 
-    # 6:15, 6:20, 6:25 PM IST
+    # 🕕 6:15, 6:20, 6:25 PM IST
     - cron: '45 12 * * *'
     - cron: '50 12 * * *'
     - cron: '55 12 * * *'
 
-    # 8:15, 8:20, 8:25 PM IST
+    # 🕗 8:15, 8:20, 8:25 PM IST
     - cron: '45 14 * * *'
     - cron: '50 14 * * *'
     - cron: '55 14 * * *'
 
   workflow_dispatch:
+    inputs:
+      draw_code:
+        description: 'Which draw to run manually?'
+        required: true
+        default: 'ALL'
+        type: choice
+        options:
+          - ALL
+          - 1PM
+          - 6PM
+          - 8PM
 
 jobs:
   run-sync:
     runs-on: ubuntu-latest
 
     env:
+      # 🔥 Node 20 warning fix
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
+      # 📥 Checkout repo
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # 🐍 Setup Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
+      # ⚙️ Install system + python dependencies
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y tesseract-ocr
+          sudo apt-get install -y tesseract-ocr poppler-utils
           pip install --upgrade pip
           pip install -r backend/requirements.txt
 
-      - name: Run Lottery Sync
+      # 🔥 RUN 1PM
+      - name: Run 1PM Sync
+        if: |
+          github.event.schedule == '45 7 * * *' ||
+          github.event.schedule == '50 7 * * *' ||
+          github.event.schedule == '55 7 * * *'
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
+          ONLY_DRAW_CODE: 1PM
+        run: python backend/sync_results.py
+
+      # 🔥 RUN 6PM
+      - name: Run 6PM Sync
+        if: |
+          github.event.schedule == '45 12 * * *' ||
+          github.event.schedule == '50 12 * * *' ||
+          github.event.schedule == '55 12 * * *'
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
+          ONLY_DRAW_CODE: 6PM
+        run: python backend/sync_results.py
+
+      # 🔥 RUN 8PM
+      - name: Run 8PM Sync
+        if: |
+          github.event.schedule == '45 14 * * *' ||
+          github.event.schedule == '50 14 * * *' ||
+          github.event.schedule == '55 14 * * *'
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
+          ONLY_DRAW_CODE: 8PM
+        run: python backend/sync_results.py
+
+      # 🧪 Manual: Run All
+      - name: Manual Run All
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.draw_code == 'ALL'
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
+        run: python backend/sync_results.py
+
+      # 🧪 Manual: Run Single Draw
+      - name: Manual Run Single Draw
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.draw_code != 'ALL'
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
+          ONLY_DRAW_CODE: ${{ github.event.inputs.draw_code }}
         run: python backend/sync_results.py
