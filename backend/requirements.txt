@@ -2,6 +2,6 @@ firebase-admin
 requests
 beautifulsoup4
 pypdf
-pillow
+Pillow
 pytesseract
 pdf2image
