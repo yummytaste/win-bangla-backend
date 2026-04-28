@@ -2,20 +2,20 @@ name: Lottery Sync Automation
 
 on:
   schedule:
-    # 1PM result
-    - cron: '40 7 * * *'   # 1:10 PM IST
-    - cron: '50 7 * * *'   # 1:20 PM IST
-    - cron: '5 8 * * *'    # 1:35 PM IST
+    # 1:15, 1:20, 1:25 PM IST
+    - cron: '45 7 * * *'
+    - cron: '50 7 * * *'
+    - cron: '55 7 * * *'
 
-    # 6PM result
-    - cron: '40 12 * * *'  # 6:10 PM IST
-    - cron: '50 12 * * *'  # 6:20 PM IST
-    - cron: '10 13 * * *'  # 6:40 PM IST
+    # 6:15, 6:20, 6:25 PM IST
+    - cron: '45 12 * * *'
+    - cron: '50 12 * * *'
+    - cron: '55 12 * * *'
 
-    # 8PM result
-    - cron: '40 14 * * *'  # 8:10 PM IST
-    - cron: '50 14 * * *'  # 8:20 PM IST
-    - cron: '10 15 * * *'  # 8:40 PM IST
+    # 8:15, 8:20, 8:25 PM IST
+    - cron: '45 14 * * *'
+    - cron: '50 14 * * *'
+    - cron: '55 14 * * *'
 
   workflow_dispatch:
     inputs:
@@ -55,9 +55,9 @@ jobs:
 
       - name: Run 1PM Sync
         if: |
-          github.event.schedule == '40 7 * * *' ||
+          github.event.schedule == '45 7 * * *' ||
           github.event.schedule == '50 7 * * *' ||
-          github.event.schedule == '5 8 * * *'
+          github.event.schedule == '55 7 * * *'
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
           ONLY_DRAW_CODE: 1PM
@@ -65,9 +65,9 @@ jobs:
 
       - name: Run 6PM Sync
         if: |
-          github.event.schedule == '40 12 * * *' ||
+          github.event.schedule == '45 12 * * *' ||
           github.event.schedule == '50 12 * * *' ||
-          github.event.schedule == '10 13 * * *'
+          github.event.schedule == '55 12 * * *'
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
           ONLY_DRAW_CODE: 6PM
@@ -75,9 +75,9 @@ jobs:
 
       - name: Run 8PM Sync
         if: |
-          github.event.schedule == '40 14 * * *' ||
+          github.event.schedule == '45 14 * * *' ||
           github.event.schedule == '50 14 * * *' ||
-          github.event.schedule == '10 15 * * *'
+          github.event.schedule == '55 14 * * *'
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
           ONLY_DRAW_CODE: 8PM
