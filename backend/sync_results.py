@@ -13,6 +13,7 @@ from firebase_admin import credentials, firestore, storage, messaging
 from google.cloud.firestore_v1.base_query import FieldFilter
 from pypdf import PdfReader
 from PIL import Image, ImageFilter, ImageOps
+from pdf2image import convert_from_bytes
 import pytesseract
 
 BASE_URL = "https://lotterysambadresult.in/"
@@ -34,7 +35,6 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Referer": BASE_URL,
 }
-
 
 firebase_key = os.environ.get("FIREBASE_KEY")
 
@@ -85,7 +85,6 @@ def fetch_page_with_retry(url: str, retries: int = 3, delay_seconds: int = 20) -
         except Exception as e:
             last_error = e
             print(f"[RETRY] page fetch attempt {attempt}/{retries} failed -> {e}")
-
             if attempt < retries:
                 time.sleep(delay_seconds)
 
@@ -124,6 +123,38 @@ def upload_to_storage(date_str, draw_code, content, ext, content_type, kind):
     return storage_path, blob.public_url
 
 
+def convert_pdf_to_poster_webp(pdf_bytes: bytes):
+    try:
+        images = convert_from_bytes(
+            pdf_bytes,
+            first_page=1,
+            last_page=1,
+            dpi=250,
+        )
+
+        if not images:
+            print("[WARN] PDF convert returned no image")
+            return None
+
+        image = images[0].convert("RGB")
+
+        buffer = BytesIO()
+        image.save(buffer, format="WEBP", quality=95)
+
+        poster_bytes = buffer.getvalue()
+        print(f"[INFO] PDF poster generated, size={len(poster_bytes)} bytes")
+
+        if len(poster_bytes) < 50000:
+            print("[WARN] Generated poster too small, skipping")
+            return None
+
+        return poster_bytes
+
+    except Exception as e:
+        print(f"[WARN] PDF to poster conversion failed: {e}")
+        return None
+
+
 def log_sync(success: bool, message: str):
     db.collection("sync_logs").add({
         "job_name": "lottery_sync_github_actions",
@@ -147,7 +178,6 @@ def send_result_notification(date_str: str, draw_label: str):
     for doc in tokens_snapshot:
         data = doc.to_dict() or {}
         token = data.get("token")
-
         if token:
             tokens.append(token)
 
@@ -170,6 +200,7 @@ def send_result_notification(date_str: str, draw_label: str):
                     "type": "result_published",
                     "date": date_str,
                     "time": draw_label,
+                    "draw_code": DRAW_CODES.get(draw_label, ""),
                 },
                 android=messaging.AndroidConfig(
                     priority="high",
@@ -212,27 +243,18 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
 
 def _prepare_image_for_ocr(image: Image.Image, threshold_value: int = 145) -> Image.Image:
     image = image.convert("RGB")
-
     width, height = image.size
-
-    scale = 3
-    image = image.resize((width * scale, height * scale))
-
+    image = image.resize((width * 3, height * 3))
     image = ImageOps.grayscale(image)
-
     image = ImageOps.autocontrast(image)
-
     image = image.filter(ImageFilter.SHARPEN)
-
     image = image.point(lambda x: 0 if x < threshold_value else 255)
-
     return image
 
 
 def extract_text_from_image_bytes(image_bytes: bytes) -> str:
     try:
         original_image = Image.open(BytesIO(image_bytes)).convert("RGB")
-
         ocr_outputs = []
 
         for threshold in [130, 145, 160]:
@@ -345,12 +367,10 @@ def fix_common_ocr_errors_for_numbers(text: str) -> str:
 
 def normalize_ocr_text_for_parsing(raw_text: str) -> str:
     text = raw_text or ""
-
     text = text.replace("\r", "\n")
     text = re.sub(r"[^\w₹/\-:.,\n ]+", " ", text)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n+", "\n", text)
-
     return text.strip()
 
 
@@ -418,7 +438,6 @@ def extract_five_digit_numbers(text: str):
 
 def extract_four_digit_numbers(text: str):
     text_fixed = fix_common_ocr_errors_for_numbers(text)
-
     numbers = re.findall(r"\b\d{4}\b", text_fixed)
 
     filtered = []
@@ -426,10 +445,8 @@ def extract_four_digit_numbers(text: str):
     for n in numbers:
         if n in ("2024", "2025", "2026", "2027"):
             continue
-
         if n.startswith("202"):
             continue
-
         filtered.append(n)
 
     return clean_number_list(filtered)
@@ -534,13 +551,13 @@ def save_result_doc(
         "date": date_str,
         "time": draw_label,
         "draw_code": draw_code,
-        "result_type": "poster" if poster_url else "pdf",
+        "result_type": "pdf" if pdf_url else "poster",
         "poster_storage_path": poster_storage_path or "",
         "poster_url": poster_url or "",
         "poster_type": poster_type or "",
         "pdf_storage_path": pdf_storage_path or "",
         "pdf_url": pdf_url or "",
-        "download_url": poster_url or pdf_url or "",
+        "download_url": pdf_url or poster_url or "",
         "source_page": source_page,
         "status": "available",
         "updated_at": firestore.SERVER_TIMESTAMP,
@@ -588,6 +605,13 @@ def is_bad_placeholder(text: str) -> bool:
         "default",
         "no result",
         "not published",
+        "google play",
+        "get it on",
+        "youtube",
+        "app store",
+        "logo",
+        "banner",
+        "advertisement",
     ]
 
     text = normalize_text(text)
@@ -595,35 +619,11 @@ def is_bad_placeholder(text: str) -> bool:
     return any(word in text for word in bad_words)
 
 
-def extract_best_poster_and_pdf(page_html: str, page_url: str, draw_label: str):
+def extract_best_pdf(page_html: str, page_url: str, draw_label: str):
     if not looks_like_matching_draw_page(page_url, draw_label):
-        return None, None
+        return None
 
     soup = BeautifulSoup(page_html, "html.parser")
-    page_text = normalize_text(soup.get_text(" ", strip=True))
-
-    poster_url = None
-    pdf_url = None
-
-    for img in soup.find_all("img", src=True):
-        src = urljoin(page_url, img.get("src", "").strip())
-        alt = img.get("alt", "")
-        parent_text = img.parent.get_text(" ", strip=True) if img.parent else ""
-        combined = f"{src} {alt} {parent_text}"
-
-        if is_bad_placeholder(combined):
-            continue
-
-        combined_norm = normalize_text(combined)
-
-        if (
-            "winner" in combined_norm
-            or "result" in combined_norm
-            or "lottery" in combined_norm
-            or "dear" in combined_norm
-        ):
-            poster_url = src
-            break
 
     pdf_candidates = []
 
@@ -651,16 +651,13 @@ def extract_best_poster_and_pdf(page_html: str, page_url: str, draw_label: str):
             content, ext, _ = download_file(candidate)
 
             if ext == "pdf" and content[:4] == b"%PDF":
-                pdf_url = candidate
-                break
+                print(f"[INFO] Valid PDF found: {candidate}")
+                return candidate
 
         except Exception as e:
             print(f"[WARN] PDF candidate failed -> {candidate} | {e}")
 
-    if is_bad_placeholder(page_text) and not pdf_url:
-        return None, None
-
-    return poster_url, pdf_url
+    return None
 
 
 def process_single_draw(date_str: str, draw_label: str, page_url: str):
@@ -668,7 +665,7 @@ def process_single_draw(date_str: str, draw_label: str, page_url: str):
 
     page_html = fetch_page_with_retry(page_url)
 
-    poster_source_url, pdf_source_url = extract_best_poster_and_pdf(
+    pdf_source_url = extract_best_pdf(
         page_html=page_html,
         page_url=page_url,
         draw_label=draw_label,
@@ -680,53 +677,51 @@ def process_single_draw(date_str: str, draw_label: str, page_url: str):
     pdf_storage_path = None
     pdf_public_url = None
     pdf_text = ""
-    ocr_text = ""
     parsed_numbers = empty_prize_numbers()
-    poster_content = None
 
-    if poster_source_url:
-        content, ext, content_type = download_file(poster_source_url)
+    if not pdf_source_url:
+        print(f"[MISS] {date_str} {draw_label} -> PDF not found")
+        return False
 
-        if ext in ("jpg", "png", "webp"):
-            poster_content = content
-            poster_storage_path, poster_public_url = upload_to_storage(
-                date_str=date_str,
-                draw_code=draw_code,
-                content=content,
-                ext=ext,
-                content_type=content_type,
-                kind="poster",
-            )
-            poster_type = ext
+    content, ext, content_type = download_file(pdf_source_url)
 
-    if pdf_source_url:
-        content, ext, content_type = download_file(pdf_source_url)
+    if ext != "pdf":
+        print(f"[MISS] {date_str} {draw_label} -> downloaded file is not PDF")
+        return False
 
-        if ext == "pdf":
-            pdf_text = extract_text_from_pdf_bytes(content)
-            pdf_storage_path, pdf_public_url = upload_to_storage(
-                date_str=date_str,
-                draw_code=draw_code,
-                content=content,
-                ext=ext,
-                content_type=content_type,
-                kind="pdf",
-            )
+    pdf_text = extract_text_from_pdf_bytes(content)
+
+    pdf_storage_path, pdf_public_url = upload_to_storage(
+        date_str=date_str,
+        draw_code=draw_code,
+        content=content,
+        ext="pdf",
+        content_type="application/pdf",
+        kind="pdf",
+    )
+
+    poster_bytes = convert_pdf_to_poster_webp(content)
+
+    if poster_bytes:
+        poster_storage_path, poster_public_url = upload_to_storage(
+            date_str=date_str,
+            draw_code=draw_code,
+            content=poster_bytes,
+            ext="webp",
+            content_type="image/webp",
+            kind="poster",
+        )
+        poster_type = "webp"
+    else:
+        print(f"[WARN] {date_str} {draw_label} -> poster not generated, PDF only")
 
     if pdf_text.strip():
         parsed_numbers = parse_prize_numbers(pdf_text, "pdf")
-    elif poster_content:
-        ocr_text = extract_text_from_image_bytes(poster_content)
-        parsed_numbers = parse_prize_numbers(ocr_text, "poster_ocr")
     else:
         parsed_numbers = empty_prize_numbers()
-        parsed_numbers["parsed_source"] = "no_pdf_no_poster"
+        parsed_numbers["parsed_source"] = "pdf_no_text"
 
-    parsed_numbers["ocr_text_preview"] = ocr_text[:1000] if ocr_text else ""
-
-    if not poster_public_url and not pdf_public_url:
-        print(f"[MISS] {date_str} {draw_label} -> no valid result found")
-        return False
+    parsed_numbers["ocr_text_preview"] = ""
 
     save_info = save_result_doc(
         date_str=date_str,
@@ -770,8 +765,6 @@ def sync_for_today():
     synced = 0
     only_draw_code = os.environ.get("ONLY_DRAW_CODE", "").strip().upper()
 
-    # GitHub Actions cron কখনো ১-২ মিনিট late/early হতে পারে।
-    # তাই শুরুতে সামান্য wait রাখা হলো।
     time.sleep(20)
 
     for draw_label, page_url in DRAW_PAGES.items():
@@ -782,9 +775,6 @@ def sync_for_today():
 
         found_result = False
 
-        # Auto Retry System
-        # প্রতিটি cron run-এর ভিতরে ৫ বার check করবে।
-        # Result late publish হলে miss হওয়ার chance কমবে।
         for attempt in range(1, 6):
             try:
                 print(f"[TRY {attempt}/5] Checking {date_str} {draw_label}")
