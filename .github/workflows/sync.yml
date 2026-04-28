@@ -18,17 +18,6 @@ on:
     - cron: '55 14 * * *'
 
   workflow_dispatch:
-    inputs:
-      draw_code:
-        description: 'Which draw to run manually?'
-        required: true
-        default: 'ALL'
-        type: choice
-        options:
-          - ALL
-          - 1PM
-          - 6PM
-          - 8PM
 
 jobs:
   run-sync:
@@ -53,45 +42,7 @@ jobs:
           pip install --upgrade pip
           pip install -r backend/requirements.txt
 
-      - name: Run 1PM Sync
-        if: |
-          github.event.schedule == '45 7 * * *' ||
-          github.event.schedule == '50 7 * * *' ||
-          github.event.schedule == '55 7 * * *'
+      - name: Run Lottery Sync
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
-          ONLY_DRAW_CODE: 1PM
-        run: python backend/sync_results.py
-
-      - name: Run 6PM Sync
-        if: |
-          github.event.schedule == '45 12 * * *' ||
-          github.event.schedule == '50 12 * * *' ||
-          github.event.schedule == '55 12 * * *'
-        env:
-          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
-          ONLY_DRAW_CODE: 6PM
-        run: python backend/sync_results.py
-
-      - name: Run 8PM Sync
-        if: |
-          github.event.schedule == '45 14 * * *' ||
-          github.event.schedule == '50 14 * * *' ||
-          github.event.schedule == '55 14 * * *'
-        env:
-          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
-          ONLY_DRAW_CODE: 8PM
-        run: python backend/sync_results.py
-
-      - name: Manual Run All
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.draw_code == 'ALL'
-        env:
-          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
-        run: python backend/sync_results.py
-
-      - name: Manual Run Single Draw
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.draw_code != 'ALL'
-        env:
-          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
-          ONLY_DRAW_CODE: ${{ github.event.inputs.draw_code }}
         run: python backend/sync_results.py
