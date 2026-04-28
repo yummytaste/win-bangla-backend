@@ -12,7 +12,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore, storage, messaging
 from google.cloud.firestore_v1.base_query import FieldFilter
 from pypdf import PdfReader
-from PIL import Image
+from PIL import Image, ImageFilter, ImageOps
 import pytesseract
 
 BASE_URL = "https://lotterysambadresult.in/"
@@ -35,6 +35,7 @@ HEADERS = {
     "Referer": BASE_URL,
 }
 
+
 firebase_key = os.environ.get("FIREBASE_KEY")
 
 if firebase_key:
@@ -42,7 +43,8 @@ if firebase_key:
 else:
     cred = credentials.Certificate("serviceAccountKey.json")
 
-firebase_admin.initialize_app(cred, {"storageBucket": BUCKET_NAME})
+if not firebase_admin._apps:
+    firebase_admin.initialize_app(cred, {"storageBucket": BUCKET_NAME})
 
 db = firestore.client()
 bucket = storage.bucket()
@@ -76,14 +78,17 @@ def fetch_page(url: str) -> str:
 
 def fetch_page_with_retry(url: str, retries: int = 3, delay_seconds: int = 20) -> str:
     last_error = None
+
     for attempt in range(1, retries + 1):
         try:
             return fetch_page(url)
         except Exception as e:
             last_error = e
             print(f"[RETRY] page fetch attempt {attempt}/{retries} failed -> {e}")
+
             if attempt < retries:
                 time.sleep(delay_seconds)
+
     raise last_error
 
 
@@ -138,9 +143,11 @@ def send_result_notification(date_str: str, draw_label: str):
     )
 
     tokens = []
+
     for doc in tokens_snapshot:
         data = doc.to_dict() or {}
         token = data.get("token")
+
         if token:
             tokens.append(token)
 
@@ -171,8 +178,10 @@ def send_result_notification(date_str: str, draw_label: str):
                     ),
                 ),
             )
+
             messaging.send(message)
             success_count += 1
+
         except Exception as e:
             print(f"[WARN] Notification failed: {e}")
             invalid_tokens.append(token)
@@ -190,28 +199,77 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
     try:
         reader = PdfReader(BytesIO(pdf_bytes))
         texts = []
+
         for page in reader.pages:
             texts.append(page.extract_text() or "")
+
         return "\n".join(texts)
+
     except Exception as e:
         print(f"[WARN] PDF text extract failed: {e}")
         return ""
 
 
+def _prepare_image_for_ocr(image: Image.Image, threshold_value: int = 145) -> Image.Image:
+    image = image.convert("RGB")
+
+    width, height = image.size
+
+    scale = 3
+    image = image.resize((width * scale, height * scale))
+
+    image = ImageOps.grayscale(image)
+
+    image = ImageOps.autocontrast(image)
+
+    image = image.filter(ImageFilter.SHARPEN)
+
+    image = image.point(lambda x: 0 if x < threshold_value else 255)
+
+    return image
+
+
 def extract_text_from_image_bytes(image_bytes: bytes) -> str:
     try:
-        image = Image.open(BytesIO(image_bytes)).convert("RGB")
+        original_image = Image.open(BytesIO(image_bytes)).convert("RGB")
 
-        width, height = image.size
-        scale = 2
-        image = image.resize((width * scale, height * scale))
+        ocr_outputs = []
 
-        text = pytesseract.image_to_string(
-            image,
-            config="--psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789₹/-:., ",
-        )
+        for threshold in [130, 145, 160]:
+            try:
+                processed_image = _prepare_image_for_ocr(
+                    original_image,
+                    threshold_value=threshold,
+                )
 
-        return text
+                text = pytesseract.image_to_string(
+                    processed_image,
+                    config=(
+                        "--oem 3 --psm 6 "
+                        "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789₹/-:., "
+                    ),
+                )
+
+                if text.strip():
+                    ocr_outputs.append(text)
+
+            except Exception as e:
+                print(f"[WARN] OCR threshold {threshold} failed: {e}")
+
+        if not ocr_outputs:
+            fallback_text = pytesseract.image_to_string(
+                original_image,
+                config="--oem 3 --psm 6",
+            )
+            ocr_outputs.append(fallback_text)
+
+        final_text = "\n".join(ocr_outputs)
+
+        print("[OCR PREVIEW]")
+        print(final_text[:500])
+
+        return final_text
+
     except Exception as e:
         print(f"[WARN] OCR image extract failed: {e}")
         return ""
@@ -223,6 +281,10 @@ def clean_number_list(numbers):
 
     for n in numbers:
         n = str(n).strip()
+
+        if not n:
+            continue
+
         if n not in seen:
             clean.append(n)
             seen.add(n)
@@ -253,50 +315,185 @@ def empty_prize_numbers():
     }
 
 
-def parse_prize_numbers(raw_text: str, source: str):
+def fix_common_ocr_errors_for_numbers(text: str) -> str:
+    if not text:
+        return ""
+
+    fixed = text
+
+    replacements = {
+        "O": "0",
+        "o": "0",
+        "D": "0",
+        "Q": "0",
+        "I": "1",
+        "l": "1",
+        "|": "1",
+        "Z": "2",
+        "z": "2",
+        "S": "5",
+        "s": "5",
+        "B": "8",
+        "G": "6",
+    }
+
+    for wrong, right in replacements.items():
+        fixed = fixed.replace(wrong, right)
+
+    return fixed
+
+
+def normalize_ocr_text_for_parsing(raw_text: str) -> str:
     text = raw_text or ""
+
+    text = text.replace("\r", "\n")
+    text = re.sub(r"[^\w₹/\-:.,\n ]+", " ", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n+", "\n", text)
+
+    return text.strip()
+
+
+def extract_first_prize(text: str):
+    text_upper = text.upper()
+
+    patterns = [
+        r"\b([0-9]{2}[A-Z])\s*[- ]?\s*([0-9]{5})\b",
+        r"\b([0-9]{2}\s*[A-Z])\s*[- ]?\s*([0-9]{5})\b",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text_upper)
+
+        if match:
+            series = match.group(1).replace(" ", "")
+            number = match.group(2)
+
+            if re.match(r"^\d{2}[A-Z]$", series) and re.match(r"^\d{5}$", number):
+                return series, number
+
+    return "", ""
+
+
+def split_text_by_prize_blocks(text: str):
+    upper = text.upper()
+
+    block_patterns = {
+        "second": r"(2ND|SECOND|2 ND)",
+        "third": r"(3RD|THIRD|3 RD)",
+        "fourth": r"(4TH|FOURTH|4 TH)",
+        "fifth": r"(5TH|FIFTH|5 TH)",
+    }
+
+    positions = []
+
+    for key, pattern in block_patterns.items():
+        match = re.search(pattern, upper)
+        if match:
+            positions.append((match.start(), key))
+
+    positions.sort()
+
+    blocks = {
+        "second": "",
+        "third": "",
+        "fourth": "",
+        "fifth": "",
+    }
+
+    if not positions:
+        return blocks
+
+    for index, (start, key) in enumerate(positions):
+        end = positions[index + 1][0] if index + 1 < len(positions) else len(text)
+        blocks[key] = text[start:end]
+
+    return blocks
+
+
+def extract_five_digit_numbers(text: str):
+    text_fixed = fix_common_ocr_errors_for_numbers(text)
+    return clean_number_list(re.findall(r"\b\d{5}\b", text_fixed))
+
+
+def extract_four_digit_numbers(text: str):
+    text_fixed = fix_common_ocr_errors_for_numbers(text)
+
+    numbers = re.findall(r"\b\d{4}\b", text_fixed)
+
+    filtered = []
+
+    for n in numbers:
+        if n in ("2024", "2025", "2026", "2027"):
+            continue
+
+        if n.startswith("202"):
+            continue
+
+        filtered.append(n)
+
+    return clean_number_list(filtered)
+
+
+def parse_prize_numbers(raw_text: str, source: str):
+    original_text = normalize_ocr_text_for_parsing(raw_text or "")
     parsed = empty_prize_numbers()
     parsed["parsed_source"] = source
 
-    text_upper = text.upper()
+    if not original_text:
+        return parsed
 
-    series_match = re.search(
-        r"\b([0-9]{2}[A-Z])\s*[- ]?\s*([0-9]{5})\b",
-        text_upper,
-    )
+    first_series, first_number = extract_first_prize(original_text)
 
-    if series_match:
-        parsed["first_prize_series"] = series_match.group(1)
-        parsed["first_prize_number"] = series_match.group(2)
-        parsed["consolation_number"] = series_match.group(2)
+    parsed["first_prize_series"] = first_series
+    parsed["first_prize_number"] = first_number
+    parsed["consolation_number"] = first_number
 
-    five_digit_numbers = clean_number_list(re.findall(r"\b\d{5}\b", text))
+    blocks = split_text_by_prize_blocks(original_text)
 
-    if parsed["first_prize_number"]:
-        five_digit_numbers = [
-            n for n in five_digit_numbers
-            if n != parsed["first_prize_number"]
-        ]
+    second_numbers = extract_five_digit_numbers(blocks["second"])
+    third_numbers = extract_four_digit_numbers(blocks["third"])
+    fourth_numbers = extract_four_digit_numbers(blocks["fourth"])
+    fifth_numbers = extract_four_digit_numbers(blocks["fifth"])
 
-    parsed["second_prize"] = five_digit_numbers[:10]
+    if not second_numbers:
+        all_five_digit_numbers = extract_five_digit_numbers(original_text)
 
-    four_digit_numbers = re.findall(r"\b\d{4}\b", text)
-    four_digit_numbers = [
-        n for n in four_digit_numbers
-        if not n.startswith("202") and n not in ("2025", "2026")
-    ]
-    four_digit_numbers = clean_number_list(four_digit_numbers)
+        if first_number:
+            all_five_digit_numbers = [
+                n for n in all_five_digit_numbers
+                if n != first_number
+            ]
 
-    if len(four_digit_numbers) >= 120:
-        parsed["fifth_prize"] = four_digit_numbers[:100]
-        parsed["third_prize"] = four_digit_numbers[100:110]
-        parsed["fourth_prize"] = four_digit_numbers[110:120]
-    elif len(four_digit_numbers) >= 20:
-        parsed["third_prize"] = four_digit_numbers[:10]
-        parsed["fourth_prize"] = four_digit_numbers[10:20]
-        parsed["fifth_prize"] = four_digit_numbers[20:]
-    else:
-        parsed["fifth_prize"] = []
+        second_numbers = all_five_digit_numbers[:10]
+
+    if not third_numbers or not fourth_numbers or not fifth_numbers:
+        all_four_digit_numbers = extract_four_digit_numbers(original_text)
+
+        if len(all_four_digit_numbers) >= 120:
+            if not fifth_numbers:
+                fifth_numbers = all_four_digit_numbers[:100]
+
+            if not third_numbers:
+                third_numbers = all_four_digit_numbers[100:110]
+
+            if not fourth_numbers:
+                fourth_numbers = all_four_digit_numbers[110:120]
+
+        elif len(all_four_digit_numbers) >= 20:
+            if not third_numbers:
+                third_numbers = all_four_digit_numbers[:10]
+
+            if not fourth_numbers:
+                fourth_numbers = all_four_digit_numbers[10:20]
+
+            if not fifth_numbers:
+                fifth_numbers = all_four_digit_numbers[20:]
+
+    parsed["second_prize"] = clean_number_list(second_numbers)
+    parsed["third_prize"] = clean_number_list(third_numbers)
+    parsed["fourth_prize"] = clean_number_list(fourth_numbers)
+    parsed["fifth_prize"] = clean_number_list(fifth_numbers)
 
     parsed["match_ready"] = bool(
         parsed["first_prize_number"]
@@ -371,12 +568,16 @@ def mark_notification_sent(doc_ref):
 
 def looks_like_matching_draw_page(page_url: str, draw_label: str) -> bool:
     page_url = page_url.lower()
+
     if draw_label == "1 PM":
         return "1-pm" in page_url
+
     if draw_label == "6 PM":
         return "6-pm" in page_url
+
     if draw_label == "8 PM":
         return "8-pm" in page_url
+
     return False
 
 
@@ -388,7 +589,9 @@ def is_bad_placeholder(text: str) -> bool:
         "no result",
         "not published",
     ]
+
     text = normalize_text(text)
+
     return any(word in text for word in bad_words)
 
 
@@ -446,9 +649,11 @@ def extract_best_poster_and_pdf(page_html: str, page_url: str, draw_label: str):
     for candidate in pdf_candidates:
         try:
             content, ext, _ = download_file(candidate)
+
             if ext == "pdf" and content[:4] == b"%PDF":
                 pdf_url = candidate
                 break
+
         except Exception as e:
             print(f"[WARN] PDF candidate failed -> {candidate} | {e}")
 
@@ -458,10 +663,116 @@ def extract_best_poster_and_pdf(page_html: str, page_url: str, draw_label: str):
     return poster_url, pdf_url
 
 
+def process_single_draw(date_str: str, draw_label: str, page_url: str):
+    draw_code = DRAW_CODES[draw_label]
+
+    page_html = fetch_page_with_retry(page_url)
+
+    poster_source_url, pdf_source_url = extract_best_poster_and_pdf(
+        page_html=page_html,
+        page_url=page_url,
+        draw_label=draw_label,
+    )
+
+    poster_storage_path = None
+    poster_public_url = None
+    poster_type = None
+    pdf_storage_path = None
+    pdf_public_url = None
+    pdf_text = ""
+    ocr_text = ""
+    parsed_numbers = empty_prize_numbers()
+    poster_content = None
+
+    if poster_source_url:
+        content, ext, content_type = download_file(poster_source_url)
+
+        if ext in ("jpg", "png", "webp"):
+            poster_content = content
+            poster_storage_path, poster_public_url = upload_to_storage(
+                date_str=date_str,
+                draw_code=draw_code,
+                content=content,
+                ext=ext,
+                content_type=content_type,
+                kind="poster",
+            )
+            poster_type = ext
+
+    if pdf_source_url:
+        content, ext, content_type = download_file(pdf_source_url)
+
+        if ext == "pdf":
+            pdf_text = extract_text_from_pdf_bytes(content)
+            pdf_storage_path, pdf_public_url = upload_to_storage(
+                date_str=date_str,
+                draw_code=draw_code,
+                content=content,
+                ext=ext,
+                content_type=content_type,
+                kind="pdf",
+            )
+
+    if pdf_text.strip():
+        parsed_numbers = parse_prize_numbers(pdf_text, "pdf")
+    elif poster_content:
+        ocr_text = extract_text_from_image_bytes(poster_content)
+        parsed_numbers = parse_prize_numbers(ocr_text, "poster_ocr")
+    else:
+        parsed_numbers = empty_prize_numbers()
+        parsed_numbers["parsed_source"] = "no_pdf_no_poster"
+
+    parsed_numbers["ocr_text_preview"] = ocr_text[:1000] if ocr_text else ""
+
+    if not poster_public_url and not pdf_public_url:
+        print(f"[MISS] {date_str} {draw_label} -> no valid result found")
+        return False
+
+    save_info = save_result_doc(
+        date_str=date_str,
+        draw_label=draw_label,
+        draw_code=draw_code,
+        poster_storage_path=poster_storage_path,
+        poster_url=poster_public_url,
+        poster_type=poster_type,
+        pdf_storage_path=pdf_storage_path,
+        pdf_url=pdf_public_url,
+        source_page=page_url,
+        parsed_numbers=parsed_numbers,
+    )
+
+    print(
+        f"[OK] {date_str} {draw_label} -> "
+        f"poster={poster_public_url or 'none'} | "
+        f"pdf={pdf_public_url or 'none'} | "
+        f"parsed_source={parsed_numbers.get('parsed_source')} | "
+        f"match_ready={parsed_numbers.get('match_ready')}"
+    )
+
+    if (
+        parsed_numbers.get("match_ready") is True
+        and not save_info["notification_sent"]
+    ):
+        send_result_notification(date_str, draw_label)
+        mark_notification_sent(save_info["doc_ref"])
+    else:
+        print(
+            f"[INFO] Notification skipped for {draw_label} | "
+            f"match_ready={parsed_numbers.get('match_ready')} | "
+            f"already_sent={save_info['notification_sent']}"
+        )
+
+    return True
+
+
 def sync_for_today():
     date_str = today_date()
     synced = 0
     only_draw_code = os.environ.get("ONLY_DRAW_CODE", "").strip().upper()
+
+    # GitHub Actions cron কখনো ১-২ মিনিট late/early হতে পারে।
+    # তাই শুরুতে সামান্য wait রাখা হলো।
+    time.sleep(20)
 
     for draw_label, page_url in DRAW_PAGES.items():
         draw_code = DRAW_CODES[draw_label]
@@ -469,105 +780,39 @@ def sync_for_today():
         if only_draw_code and draw_code != only_draw_code:
             continue
 
-        try:
-            page_html = fetch_page_with_retry(page_url)
+        found_result = False
 
-            poster_source_url, pdf_source_url = extract_best_poster_and_pdf(
-                page_html=page_html,
-                page_url=page_url,
-                draw_label=draw_label,
-            )
+        # Auto Retry System
+        # প্রতিটি cron run-এর ভিতরে ৫ বার check করবে।
+        # Result late publish হলে miss হওয়ার chance কমবে।
+        for attempt in range(1, 6):
+            try:
+                print(f"[TRY {attempt}/5] Checking {date_str} {draw_label}")
 
-            poster_storage_path = None
-            poster_public_url = None
-            poster_type = None
-            pdf_storage_path = None
-            pdf_public_url = None
-            pdf_text = ""
-            ocr_text = ""
-            parsed_numbers = empty_prize_numbers()
-            poster_content = None
-
-            if poster_source_url:
-                content, ext, content_type = download_file(poster_source_url)
-                if ext in ("jpg", "png", "webp"):
-                    poster_content = content
-                    poster_storage_path, poster_public_url = upload_to_storage(
-                        date_str=date_str,
-                        draw_code=draw_code,
-                        content=content,
-                        ext=ext,
-                        content_type=content_type,
-                        kind="poster",
-                    )
-                    poster_type = ext
-
-            if pdf_source_url:
-                content, ext, content_type = download_file(pdf_source_url)
-                if ext == "pdf":
-                    pdf_text = extract_text_from_pdf_bytes(content)
-                    pdf_storage_path, pdf_public_url = upload_to_storage(
-                        date_str=date_str,
-                        draw_code=draw_code,
-                        content=content,
-                        ext=ext,
-                        content_type=content_type,
-                        kind="pdf",
-                    )
-
-            if pdf_text.strip():
-                parsed_numbers = parse_prize_numbers(pdf_text, "pdf")
-            elif poster_content:
-                ocr_text = extract_text_from_image_bytes(poster_content)
-                parsed_numbers = parse_prize_numbers(ocr_text, "poster_ocr")
-            else:
-                parsed_numbers = empty_prize_numbers()
-                parsed_numbers["parsed_source"] = "no_pdf_no_poster"
-
-            parsed_numbers["ocr_text_preview"] = ocr_text[:1000] if ocr_text else ""
-
-            if not poster_public_url and not pdf_public_url:
-                print(f"[MISS] {date_str} {draw_label} -> no valid {draw_label} result found")
-                continue
-
-            save_info = save_result_doc(
-                date_str=date_str,
-                draw_label=draw_label,
-                draw_code=draw_code,
-                poster_storage_path=poster_storage_path,
-                poster_url=poster_public_url,
-                poster_type=poster_type,
-                pdf_storage_path=pdf_storage_path,
-                pdf_url=pdf_public_url,
-                source_page=page_url,
-                parsed_numbers=parsed_numbers,
-            )
-
-            synced += 1
-
-            print(
-                f"[OK] {date_str} {draw_label} -> "
-                f"poster={poster_public_url or 'none'} | "
-                f"pdf={pdf_public_url or 'none'} | "
-                f"parsed_source={parsed_numbers.get('parsed_source')} | "
-                f"match_ready={parsed_numbers.get('match_ready')}"
-            )
-
-            if (
-                parsed_numbers.get("match_ready") is True
-                and not save_info["notification_sent"]
-            ):
-                send_result_notification(date_str, draw_label)
-                mark_notification_sent(save_info["doc_ref"])
-            else:
-                print(
-                    f"[INFO] Notification skipped for {draw_label} | "
-                    f"match_ready={parsed_numbers.get('match_ready')} | "
-                    f"already_sent={save_info['notification_sent']}"
+                found_result = process_single_draw(
+                    date_str=date_str,
+                    draw_label=draw_label,
+                    page_url=page_url,
                 )
 
-        except Exception as e:
-            print(f"[ERROR] {date_str} {draw_label} -> {e}")
+                if found_result:
+                    synced += 1
+                    break
+
+                if attempt < 5:
+                    print(f"[WAIT] {date_str} {draw_label} not ready. Retry after 60 seconds...")
+                    time.sleep(60)
+
+            except Exception as e:
+                print(f"[ERROR TRY {attempt}/5] {date_str} {draw_label} -> {e}")
+
+                if attempt < 5:
+                    time.sleep(60)
+                else:
+                    print(f"[FAILED] {date_str} {draw_label} after 5 tries")
+
+        if not found_result:
+            print(f"[FINAL MISS] {date_str} {draw_label}")
 
     log_sync(True, f"{date_str}: synced {synced} result(s)")
 
