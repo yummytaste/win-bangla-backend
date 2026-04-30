@@ -2,6 +2,7 @@ firebase-admin
 requests
 beautifulsoup4
 pypdf
-Pillow
+pillow
 pytesseract
 pdf2image
+opencv-python-headless
