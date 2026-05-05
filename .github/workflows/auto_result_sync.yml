@@ -2,9 +2,9 @@ name: Auto Result Sync
 
 on:
   schedule:
-    - cron: "45,50,55 7 * * *"    # 1:15, 1:20, 1:25 PM IST
-    - cron: "45,50,55 12 * * *"   # 6:15, 6:20, 6:25 PM IST
-    - cron: "45,50,55 14 * * *"   # 8:15, 8:20, 8:25 PM IST
+    - cron: "45,50,55 7 * * *"
+    - cron: "45,50,55 12 * * *"
+    - cron: "45,50,55 14 * * *"
   workflow_dispatch:
 
 env:
@@ -35,8 +35,10 @@ jobs:
           pip install -r backend/requirements.txt
 
       - name: Check Firebase Secret
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
-          if [ -z "${{ secrets.FIREBASE_SERVICE_ACCOUNT }}" ]; then
+          if [ -z "$FIREBASE_KEY" ]; then
             echo "❌ FIREBASE_SERVICE_ACCOUNT secret missing"
             exit 1
           fi
