@@ -1,8 +1,8 @@
-firebase-admin
 requests
 beautifulsoup4
+firebase-admin
+google-cloud-firestore
 pypdf
 pillow
-pytesseract
 pdf2image
-opencv-python-headless
+pytesseract
