@@ -80,14 +80,17 @@ def fetch_page(url: str) -> str:
 
 def fetch_page_with_retry(url: str, retries: int = 3, delay_seconds: int = 10) -> str:
     last_error = None
+
     for attempt in range(1, retries + 1):
         try:
             return fetch_page(url)
         except Exception as e:
             last_error = e
             print(f"[RETRY] page fetch attempt {attempt}/{retries} failed -> {e}")
+
             if attempt < retries:
                 time.sleep(delay_seconds)
+
     raise last_error
 
 
@@ -120,6 +123,7 @@ def upload_to_storage(date_str, draw_code, content, ext, content_type, kind):
     blob = bucket.blob(storage_path)
     blob.upload_from_string(content, content_type=content_type)
     blob.make_public()
+
     print(f"[STORAGE OK] {storage_path}")
     return storage_path, blob.public_url
 
@@ -141,6 +145,7 @@ def convert_pdf_to_poster_webp(pdf_bytes: bytes):
             return None
 
         return poster_bytes
+
     except Exception as e:
         print(f"[WARN] PDF to poster conversion failed: {e}")
         return None
@@ -166,7 +171,6 @@ def already_final_synced(date_str: str, draw_code: str) -> bool:
         return False
 
     data = doc.to_dict() or {}
-
     return bool(data.get("download_url")) and bool(data.get("notification_sent"))
 
 
@@ -185,6 +189,7 @@ def send_result_notification(date_str: str, draw_label: str):
     for doc in tokens_snapshot:
         data = doc.to_dict() or {}
         token = data.get("token")
+
         if token:
             tokens.append(token)
 
@@ -245,6 +250,7 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
         text = "\n".join(texts)
         print(f"[PDF TEXT] chars={len(text)}")
         return text
+
     except Exception as e:
         print(f"[WARN] PDF text extract failed: {e}")
         return ""
@@ -292,8 +298,10 @@ def extract_text_from_image_bytes(image_bytes: bytes) -> str:
                 original_image,
                 config="--oem 3 --psm 11",
             )
+
             if fallback_text.strip():
                 ocr_outputs.append(fallback_text)
+
         except Exception as e:
             print(f"[WARN] OCR fallback failed: {e}")
 
@@ -303,6 +311,7 @@ def extract_text_from_image_bytes(image_bytes: bytes) -> str:
         print(final_text[:1000])
 
         return final_text
+
     except Exception as e:
         print(f"[WARN] OCR image extract failed: {e}")
         return ""
@@ -364,10 +373,18 @@ def fix_digits_only_text(text: str) -> str:
         return ""
 
     replacements = {
-        "O": "0", "o": "0", "Q": "0", "D": "0",
-        "I": "1", "l": "1", "|": "1", "!": "1",
-        "S": "5", "s": "5",
-        "Z": "2", "z": "2",
+        "O": "0",
+        "o": "0",
+        "Q": "0",
+        "D": "0",
+        "I": "1",
+        "l": "1",
+        "|": "1",
+        "!": "1",
+        "S": "5",
+        "s": "5",
+        "Z": "2",
+        "z": "2",
         "B": "8",
         "G": "6",
     }
@@ -446,6 +463,7 @@ def split_text_by_prize_blocks(text: str):
 
     for key, pattern in block_patterns.items():
         match = re.search(pattern, upper)
+
         if match:
             positions.append((match.start(), key))
 
@@ -478,21 +496,24 @@ def extract_five_digit_numbers(text: str):
     results.extend(re.findall(r"\b\d{5}\b", text))
 
     spaced = re.findall(r"\b(\d)\s+(\d)\s+(\d)\s+(\d)\s+(\d)\b", text)
+
     for group in spaced:
         results.append("".join(group))
 
     long_numbers = re.findall(r"\d{6,}", text)
+
     for block in long_numbers:
         for i in range(0, len(block) - 4):
-            part = block[i:i + 5]
-            results.append(part)
+            results.append(block[i:i + 5])
 
     filtered = []
+
     for n in results:
         if n.startswith("202"):
             continue
         if n in ("00000", "11111", "22222", "99999"):
             continue
+
         filtered.append(n)
 
     return clean_number_list(filtered)
@@ -508,21 +529,24 @@ def extract_four_digit_numbers(text: str):
     results.extend(re.findall(r"\b\d{4}\b", text))
 
     spaced = re.findall(r"\b(\d)\s+(\d)\s+(\d)\s+(\d)\b", text)
+
     for group in spaced:
         results.append("".join(group))
 
     long_numbers = re.findall(r"\d{5,}", text)
+
     for block in long_numbers:
         for i in range(0, len(block) - 3):
-            part = block[i:i + 4]
-            results.append(part)
+            results.append(block[i:i + 4])
 
     filtered = []
+
     for n in results:
         if n.startswith("202"):
             continue
         if n in ("0000", "1111", "2222", "9999"):
             continue
+
         filtered.append(n)
 
     return clean_number_list(filtered)
@@ -590,7 +614,6 @@ def parse_prize_numbers(raw_text: str, source: str):
 
     parsed["parse_confidence"] = confidence
     parsed["needs_review"] = confidence < 65
-
     parsed["match_ready"] = bool(
         parsed["first_prize_number"]
         or parsed["second_prize"]
@@ -691,6 +714,9 @@ def extract_best_pdf_and_poster(page_html: str, page_url: str):
     pdf_candidates = []
     poster_candidates = []
 
+    print("[HTML PREVIEW]")
+    print(page_html[:1200])
+
     for a in soup.find_all("a", href=True):
         href = urljoin(page_url, a.get("href", "").strip())
         text = a.get_text(" ", strip=True)
@@ -706,7 +732,7 @@ def extract_best_pdf_and_poster(page_html: str, page_url: str):
             ".pdf" in href.lower()
             or "pdf" in combined_norm
             or "download" in combined_norm
-            or "result download" in combined_norm
+            or "result" in combined_norm
         ):
             pdf_candidates.append(href)
 
@@ -719,16 +745,11 @@ def extract_best_pdf_and_poster(page_html: str, page_url: str):
         if is_bad_placeholder(combined):
             continue
 
-        combined_norm = normalize_text(combined)
-
-        if any(x in src.lower() for x in [".jpg", ".jpeg", ".png", ".webp"]) and (
-            "result" in combined_norm
-            or "dear" in combined_norm
-            or "lottery" in combined_norm
-            or "sambad" in combined_norm
-            or "nagaland" in combined_norm
-        ):
+        if any(x in src.lower() for x in [".jpg", ".jpeg", ".png", ".webp"]):
             poster_candidates.append(src)
+
+    pdf_candidates = clean_number_list(pdf_candidates)
+    poster_candidates = clean_number_list(poster_candidates)
 
     print(f"[CANDIDATES] pdf={len(pdf_candidates)}, poster={len(poster_candidates)}")
 
@@ -751,7 +772,7 @@ def extract_best_pdf_and_poster(page_html: str, page_url: str):
         try:
             content, ext, _ = download_file(candidate)
 
-            if ext in ("jpg", "png", "webp") and len(content) >= 10000:
+            if ext in ("jpg", "png", "webp") and len(content) >= 5000:
                 print(f"[INFO] Valid poster found: {candidate} size={len(content)}")
                 poster_url = candidate
                 break
@@ -853,7 +874,7 @@ def process_single_draw(date_str: str, draw_label: str, page_url: str):
     elif poster_source_url:
         content, ext, content_type = download_file(poster_source_url)
 
-        if ext not in ("jpg", "png", "webp") or len(content) < 10000:
+        if ext not in ("jpg", "png", "webp") or len(content) < 5000:
             print(f"[MISS] {date_str} {draw_label} -> valid poster not found")
             return False
 
