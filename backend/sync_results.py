@@ -37,7 +37,6 @@ HEADERS = {
     "Referer": BASE_URL,
 }
 
-
 firebase_key = os.environ.get("FIREBASE_KEY")
 
 if firebase_key:
@@ -87,7 +86,6 @@ def fetch_page_with_retry(url: str, retries: int = 3, delay_seconds: int = 10) -
         except Exception as e:
             last_error = e
             print(f"[RETRY] page fetch attempt {attempt}/{retries} failed -> {e}")
-
             if attempt < retries:
                 time.sleep(delay_seconds)
 
@@ -189,7 +187,6 @@ def send_result_notification(date_str: str, draw_label: str):
     for doc in tokens_snapshot:
         data = doc.to_dict() or {}
         token = data.get("token")
-
         if token:
             tokens.append(token)
 
@@ -463,7 +460,6 @@ def split_text_by_prize_blocks(text: str):
 
     for key, pattern in block_patterns.items():
         match = re.search(pattern, upper)
-
         if match:
             positions.append((match.start(), key))
 
@@ -496,12 +492,10 @@ def extract_five_digit_numbers(text: str):
     results.extend(re.findall(r"\b\d{5}\b", text))
 
     spaced = re.findall(r"\b(\d)\s+(\d)\s+(\d)\s+(\d)\s+(\d)\b", text)
-
     for group in spaced:
         results.append("".join(group))
 
     long_numbers = re.findall(r"\d{6,}", text)
-
     for block in long_numbers:
         for i in range(0, len(block) - 4):
             results.append(block[i:i + 5])
@@ -513,7 +507,6 @@ def extract_five_digit_numbers(text: str):
             continue
         if n in ("00000", "11111", "22222", "99999"):
             continue
-
         filtered.append(n)
 
     return clean_number_list(filtered)
@@ -529,12 +522,10 @@ def extract_four_digit_numbers(text: str):
     results.extend(re.findall(r"\b\d{4}\b", text))
 
     spaced = re.findall(r"\b(\d)\s+(\d)\s+(\d)\s+(\d)\b", text)
-
     for group in spaced:
         results.append("".join(group))
 
     long_numbers = re.findall(r"\d{5,}", text)
-
     for block in long_numbers:
         for i in range(0, len(block) - 3):
             results.append(block[i:i + 4])
@@ -546,7 +537,6 @@ def extract_four_digit_numbers(text: str):
             continue
         if n in ("0000", "1111", "2222", "9999"):
             continue
-
         filtered.append(n)
 
     return clean_number_list(filtered)
@@ -558,9 +548,6 @@ def parse_prize_numbers(raw_text: str, source: str):
     parsed["parsed_source"] = source
 
     if not original_text:
-        parsed["parse_confidence"] = 0
-        parsed["needs_review"] = True
-        parsed["match_ready"] = False
         return parsed
 
     first_series, first_number = extract_first_prize(original_text)
@@ -714,51 +701,84 @@ def extract_best_pdf_and_poster(page_html: str, page_url: str):
     pdf_candidates = []
     poster_candidates = []
 
+    def add_unique(target, url):
+        if url and url not in target:
+            target.append(url)
+
     print("[HTML PREVIEW]")
     print(page_html[:1200])
+
+    for match in re.findall(r'https?://[^"\']+?\.pdf(?:\?[^"\']*)?', page_html, flags=re.I):
+        add_unique(pdf_candidates, match)
+
+    for match in re.findall(r'https?://[^"\']+?\.(?:jpg|jpeg|png|webp)(?:\?[^"\']*)?', page_html, flags=re.I):
+        add_unique(poster_candidates, match)
 
     for a in soup.find_all("a", href=True):
         href = urljoin(page_url, a.get("href", "").strip())
         text = a.get_text(" ", strip=True)
-        parent_text = a.parent.get_text(" ", strip=True) if a.parent else ""
-        combined = f"{href} {text} {parent_text}"
+        combined = normalize_text(f"{href} {text}")
 
         if is_bad_placeholder(combined):
             continue
 
-        combined_norm = normalize_text(combined)
+        href_lower = href.lower()
 
-        if (
-            ".pdf" in href.lower()
-            or "pdf" in combined_norm
-            or "download" in combined_norm
-            or "result" in combined_norm
-        ):
-            pdf_candidates.append(href)
+        if ".pdf" in href_lower or "download" in combined or "result" in combined:
+            add_unique(pdf_candidates, href)
 
-    for img in soup.find_all("img", src=True):
-        src = urljoin(page_url, img.get("src", "").strip())
-        alt = img.get("alt", "")
-        parent_text = img.parent.get_text(" ", strip=True) if img.parent else ""
-        combined = f"{src} {alt} {parent_text}"
+        if any(x in href_lower for x in [".jpg", ".jpeg", ".png", ".webp"]):
+            add_unique(poster_candidates, href)
 
-        if is_bad_placeholder(combined):
-            continue
+    image_attrs = ["src", "data-src", "data-lazy-src", "data-original"]
 
-        if any(x in src.lower() for x in [".jpg", ".jpeg", ".png", ".webp"]):
-            poster_candidates.append(src)
+    for img in soup.find_all("img"):
+        for attr in image_attrs:
+            src = img.get(attr)
 
-    pdf_candidates = clean_number_list(pdf_candidates)
-    poster_candidates = clean_number_list(poster_candidates)
+            if not src:
+                continue
+
+            src = urljoin(page_url, src.strip())
+            src_lower = src.lower()
+
+            if any(x in src_lower for x in [".jpg", ".jpeg", ".png", ".webp"]):
+                if not is_bad_placeholder(src):
+                    add_unique(poster_candidates, src)
+
+        srcset = img.get("srcset") or img.get("data-srcset")
+
+        if srcset:
+            for part in srcset.split(","):
+                src = part.strip().split(" ")[0].strip()
+                src = urljoin(page_url, src)
+                src_lower = src.lower()
+
+                if any(x in src_lower for x in [".jpg", ".jpeg", ".png", ".webp"]):
+                    if not is_bad_placeholder(src):
+                        add_unique(poster_candidates, src)
 
     print(f"[CANDIDATES] pdf={len(pdf_candidates)}, poster={len(poster_candidates)}")
+
+    print("[PDF CANDIDATES]")
+    for item in pdf_candidates[:15]:
+        print(item)
+
+    print("[POSTER CANDIDATES]")
+    for item in poster_candidates[:15]:
+        print(item)
 
     pdf_url = None
     poster_url = None
 
     for candidate in pdf_candidates:
         try:
-            content, ext, _ = download_file(candidate)
+            content, ext, content_type = download_file(candidate)
+
+            print(
+                f"[CHECK PDF] url={candidate} | "
+                f"ext={ext} | type={content_type} | size={len(content)}"
+            )
 
             if ext == "pdf" and content[:4] == b"%PDF":
                 print(f"[INFO] Valid PDF found: {candidate}")
@@ -770,14 +790,17 @@ def extract_best_pdf_and_poster(page_html: str, page_url: str):
 
     for candidate in poster_candidates:
         try:
-            content, ext, _ = download_file(candidate)
+            content, ext, content_type = download_file(candidate)
+
+            print(
+                f"[CHECK POSTER] url={candidate} | "
+                f"ext={ext} | type={content_type} | size={len(content)}"
+            )
 
             if ext in ("jpg", "png", "webp") and len(content) >= 5000:
-                print(f"[INFO] Valid poster found: {candidate} size={len(content)}")
+                print(f"[INFO] Valid poster found: {candidate}")
                 poster_url = candidate
                 break
-
-            print(f"[SKIP] Invalid/small poster -> {candidate} size={len(content)}")
 
         except Exception as e:
             print(f"[WARN] Poster candidate failed -> {candidate} | {e}")
