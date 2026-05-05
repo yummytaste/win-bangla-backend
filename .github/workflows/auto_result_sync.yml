@@ -15,22 +15,16 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          pip install -r backend/requirements.txt
+        run: pip install -r backend/requirements.txt
 
-      - name: Create Firebase key
-        run: |
-          echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}' > serviceAccountKey.json
-
-      - name: Run Python Sync
-        run: |
-          python backend/sync_results.py
+      - name: Run Sync
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: python backend/sync_results.py
