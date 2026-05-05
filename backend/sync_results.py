@@ -16,6 +16,7 @@ from PIL import Image, ImageFilter, ImageOps
 from pdf2image import convert_from_bytes
 import pytesseract
 
+
 BASE_URL = "https://lotterysambadresult.in/"
 BUCKET_NAME = "grozip-pro.firebasestorage.app"
 
@@ -35,6 +36,7 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Referer": BASE_URL,
 }
+
 
 firebase_key = os.environ.get("FIREBASE_KEY")
 
@@ -118,12 +120,13 @@ def upload_to_storage(date_str, draw_code, content, ext, content_type, kind):
     blob = bucket.blob(storage_path)
     blob.upload_from_string(content, content_type=content_type)
     blob.make_public()
+    print(f"[STORAGE OK] {storage_path}")
     return storage_path, blob.public_url
 
 
 def convert_pdf_to_poster_webp(pdf_bytes: bytes):
     try:
-        images = convert_from_bytes(pdf_bytes, first_page=1, last_page=1, dpi=250)
+        images = convert_from_bytes(pdf_bytes, first_page=1, last_page=1, dpi=300)
 
         if not images:
             print("[WARN] PDF convert returned no image")
@@ -133,7 +136,7 @@ def convert_pdf_to_poster_webp(pdf_bytes: bytes):
         images[0].convert("RGB").save(buffer, format="WEBP", quality=95)
         poster_bytes = buffer.getvalue()
 
-        if len(poster_bytes) < 50000:
+        if len(poster_bytes) < 30000:
             print("[WARN] Generated poster too small, skipping")
             return None
 
@@ -144,13 +147,16 @@ def convert_pdf_to_poster_webp(pdf_bytes: bytes):
 
 
 def log_sync(success: bool, message: str):
-    db.collection("sync_logs").add({
-        "job_name": "lottery_sync_github_actions",
-        "run_type": "github_actions",
-        "success": success,
-        "message": message,
-        "updated_at": firestore.SERVER_TIMESTAMP,
-    })
+    try:
+        db.collection("sync_logs").add({
+            "job_name": "lottery_sync_github_actions",
+            "run_type": "github_actions",
+            "success": success,
+            "message": message,
+            "updated_at": firestore.SERVER_TIMESTAMP,
+        })
+    except Exception as e:
+        print(f"[WARN] sync log save failed: {e}")
 
 
 def already_final_synced(date_str: str, draw_code: str) -> bool:
@@ -160,10 +166,13 @@ def already_final_synced(date_str: str, draw_code: str) -> bool:
         return False
 
     data = doc.to_dict() or {}
-    return bool(data.get("download_url")) and data.get("match_ready") is True
+
+    return bool(data.get("download_url")) and bool(data.get("notification_sent"))
 
 
 def send_result_notification(date_str: str, draw_label: str):
+    print(f"[NOTIFICATION] Checking tokens for {draw_label}")
+
     tokens_snapshot = (
         db.collection("DeviceTokens")
         .where(filter=FieldFilter("is_active", "==", True))
@@ -181,7 +190,7 @@ def send_result_notification(date_str: str, draw_label: str):
 
     if not tokens:
         print(f"[INFO] No active enabled device tokens for {draw_label}")
-        return
+        return 0
 
     success_count = 0
     invalid_tokens = []
@@ -221,7 +230,8 @@ def send_result_notification(date_str: str, draw_label: str):
             "updated_at": firestore.SERVER_TIMESTAMP,
         }, merge=True)
 
-    print(f"[INFO] Notification sent to {success_count} device(s) for {draw_label}")
+    print(f"[NOTIFICATION OK] sent={success_count}, invalid={len(invalid_tokens)}")
+    return success_count
 
 
 def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
@@ -232,7 +242,9 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
         for page in reader.pages:
             texts.append(page.extract_text() or "")
 
-        return "\n".join(texts)
+        text = "\n".join(texts)
+        print(f"[PDF TEXT] chars={len(text)}")
+        return text
     except Exception as e:
         print(f"[WARN] PDF text extract failed: {e}")
         return ""
@@ -241,7 +253,7 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
 def prepare_image_for_ocr(image: Image.Image, threshold_value: int = 145) -> Image.Image:
     image = image.convert("RGB")
     width, height = image.size
-    image = image.resize((width * 3, height * 3))
+    image = image.resize((width * 4, height * 4))
     image = ImageOps.grayscale(image)
     image = ImageOps.autocontrast(image)
     image = image.filter(ImageFilter.SHARPEN)
@@ -254,7 +266,7 @@ def extract_text_from_image_bytes(image_bytes: bytes) -> str:
         original_image = Image.open(BytesIO(image_bytes)).convert("RGB")
         ocr_outputs = []
 
-        for threshold in [115, 130, 145, 160, 175]:
+        for threshold in [100, 115, 130, 145, 160, 175, 190]:
             try:
                 processed_image = prepare_image_for_ocr(
                     original_image,
@@ -275,17 +287,20 @@ def extract_text_from_image_bytes(image_bytes: bytes) -> str:
             except Exception as e:
                 print(f"[WARN] OCR threshold {threshold} failed: {e}")
 
-        if not ocr_outputs:
+        try:
             fallback_text = pytesseract.image_to_string(
                 original_image,
-                config="--oem 3 --psm 6",
+                config="--oem 3 --psm 11",
             )
-            ocr_outputs.append(fallback_text)
+            if fallback_text.strip():
+                ocr_outputs.append(fallback_text)
+        except Exception as e:
+            print(f"[WARN] OCR fallback failed: {e}")
 
         final_text = "\n".join(ocr_outputs)
 
         print("[OCR PREVIEW]")
-        print(final_text[:700])
+        print(final_text[:1000])
 
         return final_text
     except Exception as e:
@@ -369,6 +384,8 @@ def extract_result_date(text: str) -> str:
     patterns = [
         r"\b(\d{2})/(\d{2})/(\d{2})\b",
         r"\b(\d{2})-(\d{2})-(\d{2})\b",
+        r"\b(\d{2})/(\d{2})/(\d{4})\b",
+        r"\b(\d{2})-(\d{2})-(\d{4})\b",
     ]
 
     for pattern in patterns:
@@ -376,7 +393,7 @@ def extract_result_date(text: str) -> str:
 
         for day, month, year in matches:
             try:
-                yyyy = f"20{year}"
+                yyyy = year if len(year) == 4 else f"20{year}"
                 parsed = datetime.strptime(f"{yyyy}-{month}-{day}", "%Y-%m-%d")
                 return parsed.strftime("%Y-%m-%d")
             except Exception:
@@ -468,8 +485,7 @@ def extract_five_digit_numbers(text: str):
     for block in long_numbers:
         for i in range(0, len(block) - 4):
             part = block[i:i + 5]
-            if len(part) == 5:
-                results.append(part)
+            results.append(part)
 
     filtered = []
     for n in results:
@@ -499,8 +515,7 @@ def extract_four_digit_numbers(text: str):
     for block in long_numbers:
         for i in range(0, len(block) - 3):
             part = block[i:i + 4]
-            if len(part) == 4:
-                results.append(part)
+            results.append(part)
 
     filtered = []
     for n in results:
@@ -553,7 +568,7 @@ def parse_prize_numbers(raw_text: str, source: str):
         fourth_numbers = clean_number_list(fourth_numbers + all_four[10:20])[:10]
 
     if len(fifth_numbers) < 30:
-        fifth_numbers = clean_number_list(fifth_numbers + all_four[20:])
+        fifth_numbers = clean_number_list(fifth_numbers + all_four[20:])[:60]
 
     parsed["second_prize"] = clean_number_list(second_numbers)
     parsed["third_prize"] = clean_number_list(third_numbers)
@@ -570,21 +585,18 @@ def parse_prize_numbers(raw_text: str, source: str):
         confidence += 15
     if len(parsed["fourth_prize"]) >= 5:
         confidence += 15
-    if len(parsed["fifth_prize"]) >= 30:
+    if len(parsed["fifth_prize"]) >= 20:
         confidence += 20
 
     parsed["parse_confidence"] = confidence
     parsed["needs_review"] = confidence < 65
 
     parsed["match_ready"] = bool(
-        confidence >= 65
-        and parsed["first_prize_number"]
-        and (
-            parsed["second_prize"]
-            or parsed["third_prize"]
-            or parsed["fourth_prize"]
-            or parsed["fifth_prize"]
-        )
+        parsed["first_prize_number"]
+        or parsed["second_prize"]
+        or parsed["third_prize"]
+        or parsed["fourth_prize"]
+        or parsed["fifth_prize"]
     )
 
     return parsed
@@ -608,7 +620,6 @@ def save_result_doc(
     doc_ref_upper = db.collection("Results").document(doc_id)
 
     existing = doc_ref_lower.get()
-
     old_data = existing.to_dict() or {}
     notification_sent = old_data.get("notification_sent", False)
 
@@ -635,6 +646,9 @@ def save_result_doc(
     doc_ref_lower.set(data, merge=True)
     doc_ref_upper.set(data, merge=True)
 
+    print(f"[FIRESTORE OK] results/{doc_id}")
+    print(f"[FIRESTORE OK] Results/{doc_id}")
+
     return {
         "is_new_doc": not existing.exists,
         "notification_sent": notification_sent,
@@ -642,9 +656,10 @@ def save_result_doc(
     }
 
 
-def mark_notification_sent(doc_ref):
+def mark_notification_sent(doc_ref, sent_count: int):
     doc_ref.set({
         "notification_sent": True,
+        "notification_sent_count": sent_count,
         "notification_sent_at": firestore.SERVER_TIMESTAMP,
     }, merge=True)
 
@@ -715,6 +730,8 @@ def extract_best_pdf_and_poster(page_html: str, page_url: str):
         ):
             poster_candidates.append(src)
 
+    print(f"[CANDIDATES] pdf={len(pdf_candidates)}, poster={len(poster_candidates)}")
+
     pdf_url = None
     poster_url = None
 
@@ -765,7 +782,7 @@ def process_single_draw(date_str: str, draw_label: str, page_url: str):
     draw_code = DRAW_CODES[draw_label]
 
     if already_final_synced(date_str, draw_code):
-        print(f"[SKIP] {date_str} {draw_label} already final synced")
+        print(f"[SKIP] {date_str} {draw_label} already synced and notified")
         return True
 
     page_html = fetch_page_with_retry(page_url)
@@ -774,6 +791,10 @@ def process_single_draw(date_str: str, draw_label: str, page_url: str):
         page_html=page_html,
         page_url=page_url,
     )
+
+    if not pdf_source_url and not poster_source_url:
+        print(f"[ERROR] No result source found for {draw_label}")
+        return False
 
     poster_storage_path = None
     poster_public_url = None
@@ -853,10 +874,6 @@ def process_single_draw(date_str: str, draw_label: str, page_url: str):
 
         parsed_numbers = parse_prize_numbers(ocr_text, "poster_ocr")
 
-    else:
-        print(f"[MISS] {date_str} {draw_label} -> no PDF or valid poster found")
-        return False
-
     parsed_numbers["ocr_text_preview"] = ocr_text[:1200] if ocr_text else ""
 
     save_info = save_result_doc(
@@ -882,18 +899,23 @@ def process_single_draw(date_str: str, draw_label: str, page_url: str):
         f"match_ready={parsed_numbers.get('match_ready')}"
     )
 
-    if (
-        parsed_numbers.get("match_ready") is True
-        and not save_info["notification_sent"]
-    ):
-        send_result_notification(date_str, draw_label)
-        mark_notification_sent(save_info["doc_ref"])
+    print("[DEBUG DATA]")
+    print(json.dumps({
+        "first_prize_series": parsed_numbers.get("first_prize_series"),
+        "first_prize_number": parsed_numbers.get("first_prize_number"),
+        "second_prize_count": len(parsed_numbers.get("second_prize", [])),
+        "third_prize_count": len(parsed_numbers.get("third_prize", [])),
+        "fourth_prize_count": len(parsed_numbers.get("fourth_prize", [])),
+        "fifth_prize_count": len(parsed_numbers.get("fifth_prize", [])),
+        "match_ready": parsed_numbers.get("match_ready"),
+        "parse_confidence": parsed_numbers.get("parse_confidence"),
+    }, ensure_ascii=False, indent=2))
+
+    if not save_info["notification_sent"]:
+        sent_count = send_result_notification(date_str, draw_label)
+        mark_notification_sent(save_info["doc_ref"], sent_count)
     else:
-        print(
-            f"[INFO] Notification skipped | "
-            f"match_ready={parsed_numbers.get('match_ready')} | "
-            f"already_sent={save_info['notification_sent']}"
-        )
+        print("[INFO] Notification skipped because already sent")
 
     return True
 
@@ -903,10 +925,13 @@ def sync_for_today():
     synced = 0
     only_draw_code = os.environ.get("ONLY_DRAW_CODE", "").strip().upper()
 
+    print(f"[START] Auto Result Sync date={date_str}, only_draw_code={only_draw_code or 'ALL'}")
+
     for draw_label, page_url in DRAW_PAGES.items():
         draw_code = DRAW_CODES[draw_label]
 
         if only_draw_code and draw_code != only_draw_code:
+            print(f"[SKIP] ONLY_DRAW_CODE={only_draw_code}, skipping {draw_code}")
             continue
 
         found_result = False
@@ -941,6 +966,7 @@ def sync_for_today():
             print(f"[FINAL MISS] {date_str} {draw_label}")
 
     log_sync(True, f"{date_str}: synced {synced} result(s)")
+    print(f"[DONE] {date_str}: synced {synced} result(s)")
 
 
 if __name__ == "__main__":
@@ -950,3 +976,4 @@ if __name__ == "__main__":
         msg = f"{today_date()} failed: {e}"
         print(f"[FAIL] {msg}")
         log_sync(False, msg)
+        raise
