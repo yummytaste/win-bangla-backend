@@ -1,0 +1,33 @@
+name: Auto Result Sync
+
+on:
+  schedule:
+    - cron: "45,50,55 7 * * *"
+    - cron: "45,50,55 12 * * *"
+    - cron: "45,50,55 14 * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+
+      - name: Create Firebase key
+        run: |
+          echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}' > serviceAccountKey.json
+
+      - name: Run Python Sync
+        run: |
+          python backend/sync_results.py
