@@ -6,3 +6,4 @@ pypdf
 pillow
 pdf2image
 pytesseract
+PyMuPDF==1.24.9
