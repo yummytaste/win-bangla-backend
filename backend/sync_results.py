@@ -748,4 +748,4 @@ def process_draw(date_str, draw_label, page_url):
 
 def run():
     print("SYNC FILE STARTED")
-    print("RUN FUNCTION STARTED
+    print("RUN FUNCTION STARTED")
