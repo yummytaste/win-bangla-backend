@@ -2,27 +2,39 @@ name: Auto Result Sync
 
 on:
   schedule:
-    # India time 1:15 PM, 1:20 PM, 1:25 PM
+    # 1 PM -> India Time 1:15 / 1:20 / 1:25
     - cron: "45,50,55 7 * * *"
 
-    # India time 6:15 PM, 6:20 PM, 6:25 PM
+    # 6 PM -> India Time 6:15 / 6:20 / 6:25
     - cron: "45,50,55 12 * * *"
 
-    # India time 8:15 PM, 8:20 PM, 8:25 PM
+    # 8 PM -> India Time 8:15 / 8:20 / 8:25
     - cron: "45,50,55 14 * * *"
 
   workflow_dispatch:
+    inputs:
+      draw:
+        description: "কোন Result Sync করবেন?"
+        required: true
+        default: "AUTO"
+        type: choice
+        options:
+          - AUTO
+          - 1PM
+          - 6PM
+          - 8PM
 
 jobs:
   sync:
     runs-on: ubuntu-latest
 
     env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       TZ: Asia/Kolkata
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
     steps:
-      - name: Checkout code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -30,32 +42,18 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install system packages
+      - name: Install Linux Packages
         run: |
           sudo apt-get update
           sudo apt-get install -y tesseract-ocr poppler-utils
 
-      - name: Install dependencies
+      - name: Install Python Packages
         run: |
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
 
-      - name: Run Python Sync
+      - name: Run Result Sync
         env:
-          FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: |
-          python backend/sync_results.py      - name: Check Firebase Secret
-        env:
-          FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: |
-          if [ -z "$FIREBASE_KEY" ]; then
-            echo "❌ FIREBASE_SERVICE_ACCOUNT secret missing"
-            exit 1
-          fi
-          echo "✅ Firebase secret found"
-
-      - name: Run Python Sync
-        env:
-          FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          FORCE_DRAW: ${{ github.event.inputs.draw == 'AUTO' && '' || github.event.inputs.draw }}
         run: |
           python backend/sync_results.py
