@@ -1,58 +1,12 @@
-name: Auto Result Sync
-
-on:
-  schedule:
-    - cron: "45,50,55 7 * * *"
-    - cron: "45,50,55 12 * * *"
-    - cron: "45,50,55 14 * * *"
-
-  workflow_dispatch:
-    inputs:
-      draw:
-        description: "কোন Result Sync করবেন?"
-        required: true
-        default: "AUTO"
-        type: choice
-        options:
-          - AUTO
-          - 1PM
-          - 6PM
-          - 8PM
-
-jobs:
-  sync:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    env:
-      TZ: Asia/Kolkata
-      PYTHONUNBUFFERED: "1"
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-
-      - name: Install Linux Packages
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y tesseract-ocr poppler-utils
-
-      - name: Install Python Packages
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt
-
       - name: Run Result Sync
         env:
           FORCE_DRAW: ${{ github.event.inputs.draw == 'AUTO' && '' || github.event.inputs.draw }}
         run: |
           echo "DRAW SELECTED = $FORCE_DRAW"
+          echo "CHECK FILE EXISTS"
+          ls -la backend
+          echo "PYTHON COMPILE CHECK"
+          python -m py_compile backend/sync_results.py
+          echo "START PYTHON SCRIPT"
           python -u backend/sync_results.py
+          echo "SCRIPT FINISHED"
