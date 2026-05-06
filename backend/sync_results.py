@@ -1,7 +1,7 @@
 import os
 import re
+import io
 import json
-from io import BytesIO
 from datetime import datetime
 from urllib.parse import urljoin
 
@@ -19,9 +19,22 @@ BASE_URL = "https://lotterysambadresult.in/"
 BUCKET_NAME = "wb-lottery-result-live.firebasestorage.app"
 
 DRAW_PAGES = {
-    "1 PM": "https://lotterysambadresult.in/nagaland-state-lottery-sambad-today-result-1-pm.html",
-    "6 PM": "https://lotterysambadresult.in/nagaland-state-lottery-sambad-today-result-6-pm.html",
-    "8 PM": "https://lotterysambadresult.in/lottery-sambad-today-result-08-00-pm.html",
+    "1 PM": [
+        "https://lotterysambadresult.in/nagaland-state-lottery-sambad-today-result-1-pm.html",
+        "https://lotterysambadresult.in/lottery-sambad-today-result-01-00-pm.html",
+        "https://lotterysambadresult.in/",
+    ],
+    "6 PM": [
+        "https://lotterysambadresult.in/nagaland-state-lottery-sambad-today-result-6-pm.html",
+        "https://lotterysambadresult.in/lottery-sambad-today-result-06-00-pm.html",
+        "https://lotterysambadresult.in/lottery-sambad-today-result-6-00-pm.html",
+        "https://lotterysambadresult.in/",
+    ],
+    "8 PM": [
+        "https://lotterysambadresult.in/lottery-sambad-today-result-08-00-pm.html",
+        "https://lotterysambadresult.in/nagaland-state-lottery-sambad-today-result-8-pm.html",
+        "https://lotterysambadresult.in/",
+    ],
 }
 
 DRAW_CODES = {
@@ -163,7 +176,36 @@ def unique_list(items):
     return clean
 
 
-def extract_sources(html: str, page_url: str):
+def draw_keywords(draw_label: str):
+    if draw_label == "1 PM":
+        return ["1pm", "1-pm", "01-00", "1-00", "01pm", "1 pm"]
+
+    if draw_label == "6 PM":
+        return ["6pm", "6-pm", "06-00", "6-00", "06pm", "6 pm"]
+
+    if draw_label == "8 PM":
+        return ["8pm", "8-pm", "08-00", "8-00", "08pm", "8 pm"]
+
+    return []
+
+
+def filter_by_draw(urls, draw_label):
+    keys = draw_keywords(draw_label)
+    matched = []
+    others = []
+
+    for url in urls:
+        low = url.lower()
+
+        if any(k in low for k in keys):
+            matched.append(url)
+        else:
+            others.append(url)
+
+    return matched + others
+
+
+def extract_sources(html: str, page_url: str, draw_label: str):
     pdfs = []
     posters = []
 
@@ -200,7 +242,14 @@ def extract_sources(html: str, page_url: str):
             posters.append(href)
 
     for img in soup.find_all("img"):
-        for attr in ["src", "data-src", "data-lazy-src", "data-original"]:
+        for attr in [
+            "src",
+            "data-src",
+            "data-lazy-src",
+            "data-original",
+            "data-full-url",
+            "data-large_image",
+        ]:
             src = img.get(attr)
 
             if src:
@@ -222,6 +271,9 @@ def extract_sources(html: str, page_url: str):
         if any(ext in p.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"])
         and not is_bad_url(p)
     ])
+
+    pdfs = filter_by_draw(pdfs, draw_label)
+    posters = filter_by_draw(posters, draw_label)
 
     pdfs = sorted(
         pdfs,
@@ -333,35 +385,46 @@ def find_first_prize(text: str):
     return "", ""
 
 
-def extract_between(text: str, start_patterns, end_patterns):
-    start_pos = -1
+def extract_prize_blocks(text):
+    text = text.upper()
 
-    for pattern in start_patterns:
-        match = re.search(pattern, text)
+    second_block = ""
+    third_block = ""
+    fourth_block = ""
+    fifth_block = ""
 
-        if match:
-            start_pos = match.end()
-            break
+    second_match = re.search(r"2ND.*?(?:10000|10,000)(.*?)3RD", text, re.S)
+    if second_match:
+        second_block = second_match.group(1)
 
-    if start_pos == -1:
-        return ""
+    third_match = re.search(r"3RD.*?500(.*?)4TH", text, re.S)
+    if third_match:
+        third_block = third_match.group(1)
 
-    end_pos = len(text)
+    fourth_match = re.search(r"4TH.*?250(.*?)5TH", text, re.S)
+    if fourth_match:
+        fourth_block = fourth_match.group(1)
 
-    for pattern in end_patterns:
-        match = re.search(pattern, text[start_pos:])
+    fifth_match = re.search(r"5TH.*?120(.*)", text, re.S)
+    if fifth_match:
+        fifth_block = fifth_match.group(1)
 
-        if match:
-            end_pos = start_pos + match.start()
-            break
-
-    return text[start_pos:end_pos]
+    return {
+        "second": second_block,
+        "third": third_block,
+        "fourth": fourth_block,
+        "fifth": fifth_block,
+    }
 
 
 def build_parsed_data_from_text(text: str, source_name: str):
     parsed = empty_parsed_data()
 
     text = (text or "").upper()
+    text = text.replace("₹", " ")
+    text = text.replace(",", "")
+    text = re.sub(r"[^\w\s:/.-]", " ", text)
+    text = re.sub(r"\s+", " ", text)
 
     parsed["result_date"] = detect_result_date(text)
 
@@ -372,34 +435,12 @@ def build_parsed_data_from_text(text: str, source_name: str):
     parsed["consolation_number"] = first_number
     parsed["parsed_source"] = source_name
 
-    second_block = extract_between(
-        text,
-        [r"2ND", r"2\s*ND", r"SECOND"],
-        [r"3RD", r"3\s*RD", r"THIRD"],
-    )
+    blocks = extract_prize_blocks(text)
 
-    third_block = extract_between(
-        text,
-        [r"3RD", r"3\s*RD", r"THIRD"],
-        [r"4TH", r"4\s*TH", r"FOURTH"],
-    )
-
-    fourth_block = extract_between(
-        text,
-        [r"4TH", r"4\s*TH", r"FOURTH"],
-        [r"5TH", r"5\s*TH", r"FIFTH"],
-    )
-
-    fifth_block = extract_between(
-        text,
-        [r"5TH", r"5\s*TH", r"FIFTH"],
-        [r"TDS", r"DRAW", r"SHALL"],
-    )
-
-    second_numbers = clean_unique_numbers(re.findall(r"\b\d{5}\b", second_block), 5)
-    third_numbers = clean_unique_numbers(re.findall(r"\b\d{4}\b", third_block), 4)
-    fourth_numbers = clean_unique_numbers(re.findall(r"\b\d{4}\b", fourth_block), 4)
-    fifth_numbers = clean_unique_numbers(re.findall(r"\b\d{4}\b", fifth_block), 4)
+    second_numbers = clean_unique_numbers(re.findall(r"\b\d{5}\b", blocks["second"]), 5)
+    third_numbers = clean_unique_numbers(re.findall(r"\b\d{4}\b", blocks["third"]), 4)
+    fourth_numbers = clean_unique_numbers(re.findall(r"\b\d{4}\b", blocks["fourth"]), 4)
+    fifth_numbers = clean_unique_numbers(re.findall(r"\b\d{4}\b", blocks["fifth"]), 4)
 
     all_5 = clean_unique_numbers(re.findall(r"\b\d{5}\b", text), 5)
     all_4 = clean_unique_numbers(re.findall(r"\b\d{4}\b", text), 4)
@@ -479,7 +520,7 @@ def extract_lottery_data_from_pdf(content: bytes):
 
 
 def preprocess_image_for_ocr(content: bytes):
-    image = Image.open(BytesIO(content)).convert("RGB")
+    image = Image.open(io.BytesIO(content)).convert("RGB")
 
     width, height = image.size
 
@@ -491,7 +532,7 @@ def preprocess_image_for_ocr(content: bytes):
         )
 
     image = ImageOps.grayscale(image)
-    image = ImageEnhance.Contrast(image).enhance(2.2)
+    image = ImageEnhance.Contrast(image).enhance(2.5)
     image = ImageEnhance.Sharpness(image).enhance(2.0)
     image = image.filter(ImageFilter.SHARPEN)
 
@@ -510,11 +551,6 @@ def extract_lottery_data_from_image(content: bytes):
         print("\n========== POSTER OCR TEXT PREVIEW ==========")
         print(text[:5000])
         print("========== POSTER OCR TEXT END ==========\n")
-
-        text = text.upper()
-        text = text.replace("O", "0")
-        text = text.replace("I", "1")
-        text = text.replace("S", "5")
 
         return build_parsed_data_from_text(text, "poster_ocr")
 
@@ -617,7 +653,6 @@ def send_notification(date_str, draw_label, draw_code):
         )
 
         response = messaging.send(message)
-
         print(f"[TOPIC NOTIFICATION SENT] {response}")
 
     except Exception as e:
@@ -632,7 +667,7 @@ def process_draw(date_str, draw_label, page_url):
     print(f"[FETCH] {page_url}")
 
     html = fetch_html(page_url)
-    pdfs, posters = extract_sources(html, page_url)
+    pdfs, posters = extract_sources(html, page_url, draw_label)
 
     pdf_public_url = ""
     poster_public_url = ""
@@ -666,12 +701,19 @@ def process_draw(date_str, draw_label, page_url):
 
             print(f"[CHECK POSTER] {poster} | ext={ext} | size={len(content)}")
 
-            if ext in ["jpg", "png", "webp"] and len(content) > 5000:
+            if ext in ["jpg", "png", "webp"] and len(content) > 3000:
                 path = f"results/{date_str}/{draw_code}_poster.{ext}"
                 poster_public_url = upload_to_storage(path, content, content_type)
 
                 if not pdf_public_url:
                     parsed_data = extract_lottery_data_from_image(content)
+
+                    detected_date = parsed_data.get("result_date", "")
+
+                    if detected_date and detected_date != date_str:
+                        print(f"[SKIP OLD POSTER] detected={detected_date}, today={date_str}")
+                        poster_public_url = ""
+                        continue
 
                 break
 
@@ -681,9 +723,6 @@ def process_draw(date_str, draw_label, page_url):
     if not pdf_public_url and not poster_public_url:
         print(f"[MISS] No valid PDF/poster for {draw_label}")
         return False
-
-    if parsed_data.get("parse_confidence", 0) < 50:
-        print("[WARN] Low parse confidence, saving with needs_review=true")
 
     already_notified = result_already_notified(date_str, draw_code)
 
@@ -709,41 +748,4 @@ def process_draw(date_str, draw_label, page_url):
 
 def run():
     print("SYNC FILE STARTED")
-    print("RUN FUNCTION STARTED")
-
-    date_str = today_date()
-    success = 0
-    allowed_draws = get_allowed_draws()
-
-    print(f"[DATE] {date_str}")
-    print(f"[BUCKET] {BUCKET_NAME}")
-    print(f"[ALLOWED DRAWS] {allowed_draws}")
-
-    if not allowed_draws:
-        print("[SKIP] Current time is not result sync time")
-        return
-
-    for draw_label, page_url in DRAW_PAGES.items():
-        draw_code = DRAW_CODES[draw_label]
-
-        if draw_code not in allowed_draws:
-            print(f"[SKIP DRAW] {draw_label}")
-            continue
-
-        try:
-            ok = process_draw(date_str, draw_label, page_url)
-
-            if ok:
-                success += 1
-
-        except Exception as e:
-            import traceback
-
-            print(f"[ERROR] {draw_label}: {e}")
-            traceback.print_exc()
-
-    print(f"\n[DONE] synced={success}")
-
-
-if __name__ == "__main__":
-    run()
+    print("RUN FUNCTION STARTED
