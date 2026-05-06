@@ -747,5 +747,13 @@ def process_draw(date_str, draw_label, page_url):
 
 
 def run():
-    print("SYNC FILE STARTED")
-    print("RUN FUNCTION STARTED")
+    print("SYNC FILE STARTED", flush=True)
+    print("RUN FUNCTION STARTED", flush=True)
+
+    date_str = today_date()
+    success = 0
+    allowed_draws = get_allowed_draws()
+
+    print(f"[DATE] {date_str}", flush=True)
+    print(f"[BUCKET] {BUCKET_NAME}", flush=True)
+    print(f"[ALLOWED DRAWS] {allowed_draws}", flush=True)
