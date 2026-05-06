@@ -22,9 +22,11 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     env:
       TZ: Asia/Kolkata
+      PYTHONUNBUFFERED: "1"
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
@@ -36,10 +38,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
 
       - name: Install Linux Packages
         run: |
-          sudo apt-get update
+          sudo apt-get update -qq
           sudo apt-get install -y tesseract-ocr poppler-utils
 
       - name: Install Python Packages
@@ -51,4 +54,5 @@ jobs:
         env:
           FORCE_DRAW: ${{ github.event.inputs.draw == 'AUTO' && '' || github.event.inputs.draw }}
         run: |
-          python backend/sync_results.py
+          echo "DRAW SELECTED = $FORCE_DRAW"
+          python -u backend/sync_results.py
