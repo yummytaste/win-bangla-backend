@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from urllib.parse import urljoin
 
+import fitz
 import requests
 from bs4 import BeautifulSoup
 import firebase_admin
@@ -189,10 +190,7 @@ def extract_sources(html: str, page_url: str):
     pdfs = unique_list(pdfs)
     posters = unique_list(posters)
 
-    pdfs = [
-        p for p in pdfs
-        if ".pdf" in p.lower()
-    ]
+    pdfs = [p for p in pdfs if ".pdf" in p.lower()]
 
     posters = [
         p for p in posters
@@ -225,7 +223,201 @@ def extract_sources(html: str, page_url: str):
     return pdfs, posters
 
 
-def save_result_doc(date_str, draw_label, draw_code, pdf_url, poster_url, source_page):
+def empty_parsed_data():
+    return {
+        "first_prize_series": "",
+        "first_prize_number": "",
+        "consolation_number": "",
+        "second_prize": [],
+        "third_prize": [],
+        "fourth_prize": [],
+        "fifth_prize": [],
+        "prize_amounts": {
+            "first": "₹1 Crore",
+            "consolation": "₹1000",
+            "second": "₹10000",
+            "third": "₹500",
+            "fourth": "₹250",
+            "fifth": "₹120",
+        },
+        "parse_confidence": 0,
+        "needs_review": True,
+        "parsed_source": "none",
+    }
+
+
+def extract_pdf_text(content: bytes) -> str:
+    doc = fitz.open(stream=content, filetype="pdf")
+    full_text = ""
+
+    for page in doc:
+        full_text += "\n" + page.get_text("text")
+
+    return full_text.upper()
+
+
+def clean_unique_numbers(numbers, length):
+    clean = []
+    seen = set()
+
+    for num in numbers:
+        num = str(num).strip()
+
+        if not re.fullmatch(rf"\d{{{length}}}", num):
+            continue
+
+        if length == 4 and num in {"2026", "3933"}:
+            continue
+
+        if num not in seen:
+            clean.append(num)
+            seen.add(num)
+
+    return clean
+
+
+def find_first_prize(text: str):
+    patterns = [
+        r"\b([0-9]{2}[A-Z])\s+([0-9]{5})\b",
+        r"\b([0-9]{2})\s*([A-Z])\s+([0-9]{5})\b",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+
+        if match:
+            groups = match.groups()
+
+            if len(groups) == 2:
+                return groups[0], groups[1]
+
+            return f"{groups[0]}{groups[1]}", groups[2]
+
+    return "", ""
+
+
+def extract_between(text: str, start_patterns, end_patterns):
+    start_pos = -1
+
+    for pattern in start_patterns:
+        match = re.search(pattern, text)
+        if match:
+            start_pos = match.end()
+            break
+
+    if start_pos == -1:
+        return ""
+
+    end_pos = len(text)
+
+    for pattern in end_patterns:
+        match = re.search(pattern, text[start_pos:])
+        if match:
+            end_pos = start_pos + match.start()
+            break
+
+    return text[start_pos:end_pos]
+
+
+def extract_lottery_data_from_pdf(content: bytes):
+    parsed = empty_parsed_data()
+
+    try:
+        text = extract_pdf_text(content)
+
+        print("\n========== PDF TEXT PREVIEW ==========")
+        print(text[:5000])
+        print("========== PDF TEXT END ==========\n")
+
+        first_series, first_number = find_first_prize(text)
+
+        parsed["first_prize_series"] = first_series
+        parsed["first_prize_number"] = first_number
+        parsed["consolation_number"] = first_number
+        parsed["parsed_source"] = "pdf_text"
+
+        second_block = extract_between(
+            text,
+            [r"2ND", r"2\s*ND", r"SECOND"],
+            [r"3RD", r"3\s*RD", r"THIRD"],
+        )
+
+        third_block = extract_between(
+            text,
+            [r"3RD", r"3\s*RD", r"THIRD"],
+            [r"4TH", r"4\s*TH", r"FOURTH"],
+        )
+
+        fourth_block = extract_between(
+            text,
+            [r"4TH", r"4\s*TH", r"FOURTH"],
+            [r"5TH", r"5\s*TH", r"FIFTH"],
+        )
+
+        fifth_block = extract_between(
+            text,
+            [r"5TH", r"5\s*TH", r"FIFTH"],
+            [r"TDS", r"DRAW", r"SHALL"],
+        )
+
+        second_numbers = clean_unique_numbers(re.findall(r"\b\d{5}\b", second_block), 5)
+        third_numbers = clean_unique_numbers(re.findall(r"\b\d{4}\b", third_block), 4)
+        fourth_numbers = clean_unique_numbers(re.findall(r"\b\d{4}\b", fourth_block), 4)
+        fifth_numbers = clean_unique_numbers(re.findall(r"\b\d{4}\b", fifth_block), 4)
+
+        all_5 = clean_unique_numbers(re.findall(r"\b\d{5}\b", text), 5)
+        all_4 = clean_unique_numbers(re.findall(r"\b\d{4}\b", text), 4)
+
+        if first_number and first_number in all_5:
+            all_5.remove(first_number)
+
+        if len(second_numbers) < 10:
+            second_numbers = all_5[:10]
+
+        if len(third_numbers) < 10 or len(fourth_numbers) < 10 or len(fifth_numbers) < 50:
+            third_numbers = all_4[:10]
+            fourth_numbers = all_4[10:20]
+            fifth_numbers = all_4[20:120]
+
+        parsed["second_prize"] = second_numbers[:10]
+        parsed["third_prize"] = third_numbers[:10]
+        parsed["fourth_prize"] = fourth_numbers[:10]
+        parsed["fifth_prize"] = fifth_numbers[:120]
+
+        confidence = 0
+
+        if parsed["first_prize_series"] and parsed["first_prize_number"]:
+            confidence += 30
+        if len(parsed["second_prize"]) >= 10:
+            confidence += 20
+        if len(parsed["third_prize"]) >= 10:
+            confidence += 15
+        if len(parsed["fourth_prize"]) >= 10:
+            confidence += 15
+        if len(parsed["fifth_prize"]) >= 50:
+            confidence += 20
+
+        parsed["parse_confidence"] = confidence
+        parsed["needs_review"] = confidence < 70
+
+        print("[PARSE OK]")
+        print(json.dumps(parsed, ensure_ascii=False, indent=2))
+
+    except Exception as e:
+        print(f"[PARSE ERROR] {e}")
+
+    return parsed
+
+
+def save_result_doc(
+    date_str,
+    draw_label,
+    draw_code,
+    pdf_url,
+    poster_url,
+    source_page,
+    parsed_data,
+):
     doc_id = f"{date_str}_{draw_code}"
 
     data = {
@@ -238,6 +430,17 @@ def save_result_doc(date_str, draw_label, draw_code, pdf_url, poster_url, source
         "source_page": source_page,
         "status": "available",
         "match_ready": True,
+        "first_prize_series": parsed_data.get("first_prize_series", ""),
+        "first_prize_number": parsed_data.get("first_prize_number", ""),
+        "consolation_number": parsed_data.get("consolation_number", ""),
+        "second_prize": parsed_data.get("second_prize", []),
+        "third_prize": parsed_data.get("third_prize", []),
+        "fourth_prize": parsed_data.get("fourth_prize", []),
+        "fifth_prize": parsed_data.get("fifth_prize", []),
+        "prize_amounts": parsed_data.get("prize_amounts", {}),
+        "parse_confidence": parsed_data.get("parse_confidence", 0),
+        "needs_review": parsed_data.get("needs_review", True),
+        "parsed_source": parsed_data.get("parsed_source", "none"),
         "updated_at": firestore.SERVER_TIMESTAMP,
         "created_at": firestore.SERVER_TIMESTAMP,
     }
@@ -307,6 +510,7 @@ def process_draw(date_str, draw_label, page_url):
 
     pdf_public_url = ""
     poster_public_url = ""
+    parsed_data = empty_parsed_data()
 
     for pdf in pdfs:
         try:
@@ -314,6 +518,8 @@ def process_draw(date_str, draw_label, page_url):
             print(f"[CHECK PDF] {pdf} | ext={ext} | size={len(content)}")
 
             if ext == "pdf":
+                parsed_data = extract_lottery_data_from_pdf(content)
+
                 path = f"results/{date_str}/{draw_code}_pdf.pdf"
                 pdf_public_url = upload_to_storage(path, content, content_type)
                 break
@@ -345,6 +551,7 @@ def process_draw(date_str, draw_label, page_url):
         pdf_url=pdf_public_url,
         poster_url=poster_public_url,
         source_page=page_url,
+        parsed_data=parsed_data,
     )
 
     send_notification(date_str, draw_label, draw_code)
