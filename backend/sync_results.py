@@ -765,4 +765,5 @@ def run():
     print(f"[BUCKET] {BUCKET_NAME}", flush=True)
     print(f"[ALLOWED DRAWS] {allowed_draws}", flush=True)
     if __name__ == "__main__":
-    run()
+        run()
+
