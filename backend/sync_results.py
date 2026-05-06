@@ -63,7 +63,8 @@ def init_firebase():
     return firestore.client(), storage.bucket()
 
 
-db, bucket = init_firebase()
+db = None
+bucket = None
 
 
 def today_date():
@@ -749,6 +750,12 @@ def process_draw(date_str, draw_label, page_url):
 def run():
     print("SYNC FILE STARTED", flush=True)
     print("RUN FUNCTION STARTED", flush=True)
+
+    global db, bucket
+
+    print("[INIT FIREBASE]", flush=True)
+    db, bucket = init_firebase()
+    print("[INIT FIREBASE OK]", flush=True)
 
     date_str = today_date()
     success = 0
