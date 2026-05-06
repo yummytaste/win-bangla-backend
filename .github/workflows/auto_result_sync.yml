@@ -1,6 +1,11 @@
 name: Auto Result Sync
 
 on:
+  schedule:
+    - cron: "45,50,55 7 * * *"
+    - cron: "45,50,55 12 * * *"
+    - cron: "45,50,55 14 * * *"
+
   workflow_dispatch:
     inputs:
       draw:
@@ -17,10 +22,11 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     env:
       TZ: Asia/Kolkata
-      PYTHONUNBUFFERED: 1
+      PYTHONUNBUFFERED: "1"
 
     steps:
       - name: Checkout Repository
@@ -43,9 +49,8 @@ jobs:
 
       - name: Run Result Sync
         env:
-          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
+          FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           FORCE_DRAW: ${{ github.event.inputs.draw == 'AUTO' && '' || github.event.inputs.draw }}
-
         run: |
           echo "DRAW SELECTED = $FORCE_DRAW"
 
@@ -59,4 +64,3 @@ jobs:
           python -u backend/sync_results.py
 
           echo "SCRIPT FINISHED"
-          
