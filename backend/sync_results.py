@@ -44,16 +44,20 @@ DRAW_CODES = {
 }
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 AppleWebKit/537.36 Chrome/120 Safari/537.36",
     "Referer": BASE_URL,
 }
 
 
+db = None
+bucket = None
+
+
 def init_firebase():
-    firebase_key = os.environ.get("FIREBASE_KEY")
+    firebase_key = os.environ.get("FIREBASE_KEY", "").strip()
 
     if not firebase_key:
-        raise RuntimeError("FIREBASE_KEY environment variable missing")
+        raise RuntimeError("FIREBASE_KEY is empty. Check GitHub Secret FIREBASE_SERVICE_ACCOUNT")
 
     cred = credentials.Certificate(json.loads(firebase_key))
 
@@ -63,98 +67,69 @@ def init_firebase():
     return firestore.client(), storage.bucket()
 
 
-db = None
-bucket = None
-
-
 def today_date():
     return datetime.now().strftime("%Y-%m-%d")
 
 
 def get_allowed_draws():
-    now = datetime.now()
-    hour = now.hour
-    minute = now.minute
-
     force_draw = os.environ.get("FORCE_DRAW", "").strip().upper()
 
     if force_draw in ["1PM", "6PM", "8PM"]:
         return [force_draw]
 
+    now = datetime.now()
+    hour = now.hour
+    minute = now.minute
+
     if hour == 13 and minute in [15, 20, 25]:
         return ["1PM"]
-
     if hour == 18 and minute in [15, 20, 25]:
         return ["6PM"]
-
     if hour == 20 and minute in [15, 20, 25]:
         return ["8PM"]
 
     return []
 
 
-def is_bad_url(url: str) -> bool:
+def is_bad_url(url):
     url = (url or "").lower()
-
     bad_words = [
-        "logo",
-        "banner",
-        "youtube",
-        "telegram",
-        "whatsapp",
-        "facebook",
-        "ads",
-        "advertisement",
-        "cs101",
-        "ed14",
-        "lottery-sambad.png",
-        "install",
-        "app",
-        "playstore",
-        "icon",
-        "favicon",
+        "logo", "banner", "youtube", "telegram", "whatsapp", "facebook",
+        "ads", "advertisement", "cs101", "ed14", "lottery-sambad.png",
+        "install", "app", "playstore", "icon", "favicon",
     ]
+    return any(x in url for x in bad_words)
 
-    return any(word in url for word in bad_words)
 
-
-def detect_file_type(content: bytes):
+def detect_file_type(content):
     if content[:4] == b"%PDF":
         return "pdf", "application/pdf"
-
     if content[:3] == b"\xff\xd8\xff":
         return "jpg", "image/jpeg"
-
     if content[:8] == b"\x89PNG\r\n\x1a\n":
         return "png", "image/png"
-
     if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
         return "webp", "image/webp"
-
     return None, None
 
 
-def download(url: str):
+def download(url):
     response = requests.get(url, headers=HEADERS, timeout=45)
     response.raise_for_status()
-
     content = response.content
     ext, content_type = detect_file_type(content)
-
     return content, ext, content_type
 
 
-def upload_to_storage(path: str, content: bytes, content_type: str):
+def upload_to_storage(path, content, content_type):
     blob = bucket.blob(path)
     blob.upload_from_string(content, content_type=content_type)
     blob.make_public()
-
-    print(f"[STORAGE OK] {path}")
-
+    print(f"[STORAGE OK] {path}", flush=True)
     return blob.public_url
 
 
-def fetch_html(url: str):
+def fetch_html(url):
     response = requests.get(url, headers=HEADERS, timeout=35)
     response.raise_for_status()
     return response.text
@@ -167,9 +142,7 @@ def unique_list(items):
     for item in items:
         if not item:
             continue
-
         item = item.strip()
-
         if item not in seen:
             clean.append(item)
             seen.add(item)
@@ -177,16 +150,13 @@ def unique_list(items):
     return clean
 
 
-def draw_keywords(draw_label: str):
+def draw_keywords(draw_label):
     if draw_label == "1 PM":
         return ["1pm", "1-pm", "01-00", "1-00", "01pm", "1 pm"]
-
     if draw_label == "6 PM":
         return ["6pm", "6-pm", "06-00", "6-00", "06pm", "6 pm"]
-
     if draw_label == "8 PM":
         return ["8pm", "8-pm", "08-00", "8-00", "08pm", "8 pm"]
-
     return []
 
 
@@ -197,7 +167,6 @@ def filter_by_draw(urls, draw_label):
 
     for url in urls:
         low = url.lower()
-
         if any(k in low for k in keys):
             matched.append(url)
         else:
@@ -206,67 +175,39 @@ def filter_by_draw(urls, draw_label):
     return matched + others
 
 
-def extract_sources(html: str, page_url: str, draw_label: str):
+def extract_sources(html, page_url, draw_label):
     pdfs = []
     posters = []
 
     soup = BeautifulSoup(html, "html.parser")
 
-    pdfs.extend(
-        re.findall(
-            r'https?://[^"\']+?\.pdf(?:\?[^"\']*)?',
-            html,
-            flags=re.I,
-        )
-    )
-
-    posters.extend(
-        re.findall(
-            r'https?://[^"\']+?\.(?:jpg|jpeg|png|webp)(?:\?[^"\']*)?',
-            html,
-            flags=re.I,
-        )
-    )
+    pdfs.extend(re.findall(r'https?://[^"\']+?\.pdf(?:\?[^"\']*)?', html, flags=re.I))
+    posters.extend(re.findall(r'https?://[^"\']+?\.(?:jpg|jpeg|png|webp)(?:\?[^"\']*)?', html, flags=re.I))
 
     for a in soup.find_all("a", href=True):
         href = urljoin(page_url, a.get("href", "").strip())
-        href_lower = href.lower()
-        text = a.get_text(" ", strip=True).lower()
+        low = href.lower()
 
-        if ".pdf" in href_lower:
+        if ".pdf" in low:
             pdfs.append(href)
 
-        if "download" in text and ".pdf" in href_lower:
-            pdfs.append(href)
-
-        if any(ext in href_lower for ext in [".jpg", ".jpeg", ".png", ".webp"]):
+        if any(ext in low for ext in [".jpg", ".jpeg", ".png", ".webp"]):
             posters.append(href)
 
     for img in soup.find_all("img"):
-        for attr in [
-            "src",
-            "data-src",
-            "data-lazy-src",
-            "data-original",
-            "data-full-url",
-            "data-large_image",
-        ]:
+        for attr in ["src", "data-src", "data-lazy-src", "data-original", "data-full-url", "data-large_image"]:
             src = img.get(attr)
-
             if src:
                 posters.append(urljoin(page_url, src.strip()))
 
         srcset = img.get("srcset") or img.get("data-srcset")
-
         if srcset:
             for part in srcset.split(","):
                 src = part.strip().split(" ")[0].strip()
-
                 if src:
                     posters.append(urljoin(page_url, src))
 
     pdfs = unique_list([p for p in pdfs if ".pdf" in p.lower()])
-
     posters = unique_list([
         p for p in posters
         if any(ext in p.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"])
@@ -276,27 +217,9 @@ def extract_sources(html: str, page_url: str, draw_label: str):
     pdfs = filter_by_draw(pdfs, draw_label)
     posters = filter_by_draw(posters, draw_label)
 
-    pdfs = sorted(
-        pdfs,
-        key=lambda x: (
-            0 if "/wp-content/uploads/" in x.lower() else 1,
-            0 if "2026" in x.lower() else 1,
-            0 if "pdf_" in x.lower() else 1,
-        ),
-    )
-
-    posters = sorted(
-        posters,
-        key=lambda x: (
-            0 if "/wp-content/uploads/" in x.lower() else 1,
-            0 if "2026" in x.lower() else 1,
-            0 if "img_" in x.lower() else 1,
-        ),
-    )
-
-    print(f"[CANDIDATES] pdf={len(pdfs)}, poster={len(posters)}")
-    print("[PDF]", pdfs[:5])
-    print("[POSTER]", posters[:5])
+    print(f"[CANDIDATES] pdf={len(pdfs)}, poster={len(posters)}", flush=True)
+    print("[PDF]", pdfs[:5], flush=True)
+    print("[POSTER]", posters[:5], flush=True)
 
     return pdfs, posters
 
@@ -325,7 +248,7 @@ def empty_parsed_data():
     }
 
 
-def detect_result_date(text: str):
+def detect_result_date(text):
     matches = re.findall(r"\b(\d{2})[/-](\d{2})[/-](\d{2,4})\b", text)
 
     for dd, mm, yy in matches:
@@ -333,7 +256,6 @@ def detect_result_date(text: str):
             continue
 
         year = int(yy)
-
         if year < 100:
             year += 2000
 
@@ -365,7 +287,7 @@ def clean_unique_numbers(numbers, length):
     return clean
 
 
-def find_first_prize(text: str):
+def find_first_prize(text):
     patterns = [
         r"\b([0-9]{2}[A-Z])\s+([0-9]{5})\b",
         r"\b([0-9]{2})\s*([A-Z])\s+([0-9]{5})\b",
@@ -374,13 +296,10 @@ def find_first_prize(text: str):
 
     for pattern in patterns:
         match = re.search(pattern, text)
-
         if match:
             groups = match.groups()
-
             if len(groups) == 2:
                 return groups[0], groups[1]
-
             return f"{groups[0]}{groups[1]}", groups[2]
 
     return "", ""
@@ -389,36 +308,36 @@ def find_first_prize(text: str):
 def extract_prize_blocks(text):
     text = text.upper()
 
-    second_block = ""
-    third_block = ""
-    fourth_block = ""
-    fifth_block = ""
+    second = ""
+    third = ""
+    fourth = ""
+    fifth = ""
 
-    second_match = re.search(r"2ND.*?(?:10000|10,000)(.*?)3RD", text, re.S)
-    if second_match:
-        second_block = second_match.group(1)
+    m = re.search(r"2ND.*?(?:10000|10,000)(.*?)3RD", text, re.S)
+    if m:
+        second = m.group(1)
 
-    third_match = re.search(r"3RD.*?500(.*?)4TH", text, re.S)
-    if third_match:
-        third_block = third_match.group(1)
+    m = re.search(r"3RD.*?500(.*?)4TH", text, re.S)
+    if m:
+        third = m.group(1)
 
-    fourth_match = re.search(r"4TH.*?250(.*?)5TH", text, re.S)
-    if fourth_match:
-        fourth_block = fourth_match.group(1)
+    m = re.search(r"4TH.*?250(.*?)5TH", text, re.S)
+    if m:
+        fourth = m.group(1)
 
-    fifth_match = re.search(r"5TH.*?120(.*)", text, re.S)
-    if fifth_match:
-        fifth_block = fifth_match.group(1)
+    m = re.search(r"5TH.*?120(.*)", text, re.S)
+    if m:
+        fifth = m.group(1)
 
     return {
-        "second": second_block,
-        "third": third_block,
-        "fourth": fourth_block,
-        "fifth": fifth_block,
+        "second": second,
+        "third": third,
+        "fourth": fourth,
+        "fifth": fifth,
     }
 
 
-def build_parsed_data_from_text(text: str, source_name: str):
+def build_parsed_data_from_text(text, source_name):
     parsed = empty_parsed_data()
 
     text = (text or "").upper()
@@ -430,7 +349,6 @@ def build_parsed_data_from_text(text: str, source_name: str):
     parsed["result_date"] = detect_result_date(text)
 
     first_series, first_number = find_first_prize(text)
-
     parsed["first_prize_series"] = first_series
     parsed["first_prize_number"] = first_number
     parsed["consolation_number"] = first_number
@@ -467,35 +385,29 @@ def build_parsed_data_from_text(text: str, source_name: str):
     parsed["fifth_prize"] = fifth_numbers[:120]
 
     confidence = 0
-
     if parsed["result_date"]:
         confidence += 10
-
     if parsed["first_prize_series"] and parsed["first_prize_number"]:
         confidence += 30
-
     if len(parsed["second_prize"]) >= 10:
         confidence += 20
-
     if len(parsed["third_prize"]) >= 10:
         confidence += 15
-
     if len(parsed["fourth_prize"]) >= 10:
         confidence += 15
-
     if len(parsed["fifth_prize"]) >= 50:
         confidence += 10
 
     parsed["parse_confidence"] = confidence
     parsed["needs_review"] = confidence < 70
 
-    print("[PARSE OK]")
-    print(json.dumps(parsed, ensure_ascii=False, indent=2))
+    print("[PARSE OK]", flush=True)
+    print(json.dumps(parsed, ensure_ascii=False, indent=2), flush=True)
 
     return parsed
 
 
-def extract_pdf_text(content: bytes) -> str:
+def extract_pdf_text(content):
     doc = fitz.open(stream=content, filetype="pdf")
     full_text = ""
 
@@ -505,32 +417,25 @@ def extract_pdf_text(content: bytes) -> str:
     return full_text.upper()
 
 
-def extract_lottery_data_from_pdf(content: bytes):
+def extract_lottery_data_from_pdf(content):
     try:
         text = extract_pdf_text(content)
-
-        print("\n========== PDF TEXT PREVIEW ==========")
-        print(text[:5000])
-        print("========== PDF TEXT END ==========\n")
-
+        print("========== PDF TEXT PREVIEW ==========", flush=True)
+        print(text[:3000], flush=True)
+        print("========== PDF TEXT END ==========", flush=True)
         return build_parsed_data_from_text(text, "pdf_text")
-
     except Exception as e:
-        print(f"[PDF PARSE ERROR] {e}")
+        print(f"[PDF PARSE ERROR] {e}", flush=True)
         return empty_parsed_data()
 
 
-def preprocess_image_for_ocr(content: bytes):
+def preprocess_image_for_ocr(content):
     image = Image.open(io.BytesIO(content)).convert("RGB")
 
     width, height = image.size
-
     if width < 1600:
         scale = 1600 / width
-        image = image.resize(
-            (int(width * scale), int(height * scale)),
-            Image.LANCZOS,
-        )
+        image = image.resize((int(width * scale), int(height * scale)), Image.LANCZOS)
 
     image = ImageOps.grayscale(image)
     image = ImageEnhance.Contrast(image).enhance(2.5)
@@ -540,23 +445,18 @@ def preprocess_image_for_ocr(content: bytes):
     return image
 
 
-def extract_lottery_data_from_image(content: bytes):
+def extract_lottery_data_from_image(content):
     try:
         image = preprocess_image_for_ocr(content)
+        text = pytesseract.image_to_string(image, config="--oem 3 --psm 6")
 
-        text = pytesseract.image_to_string(
-            image,
-            config="--oem 3 --psm 6",
-        )
-
-        print("\n========== POSTER OCR TEXT PREVIEW ==========")
-        print(text[:5000])
-        print("========== POSTER OCR TEXT END ==========\n")
+        print("========== POSTER OCR TEXT PREVIEW ==========", flush=True)
+        print(text[:3000], flush=True)
+        print("========== POSTER OCR TEXT END ==========", flush=True)
 
         return build_parsed_data_from_text(text, "poster_ocr")
-
     except Exception as e:
-        print(f"[POSTER OCR ERROR] {e}")
+        print(f"[POSTER OCR ERROR] {e}", flush=True)
         return empty_parsed_data()
 
 
@@ -565,10 +465,8 @@ def result_already_notified(date_str, draw_code):
 
     try:
         doc = db.collection("Results").document(doc_id).get()
-
         if doc.exists:
             return bool((doc.to_dict() or {}).get("notification_sent", False))
-
     except Exception:
         pass
 
@@ -578,24 +476,13 @@ def result_already_notified(date_str, draw_code):
 def mark_notification_sent(date_str, draw_code):
     doc_id = f"{date_str}_{draw_code}"
 
-    data = {
+    db.collection("Results").document(doc_id).set({
         "notification_sent": True,
         "notification_sent_at": firestore.SERVER_TIMESTAMP,
-    }
-
-    db.collection("Results").document(doc_id).set(data, merge=True)
+    }, merge=True)
 
 
-def save_result_doc(
-    date_str,
-    draw_label,
-    draw_code,
-    pdf_url,
-    poster_url,
-    source_page,
-    parsed_data,
-    notification_sent,
-):
+def save_result_doc(date_str, draw_label, draw_code, pdf_url, poster_url, source_page, parsed_data, notification_sent):
     doc_id = f"{date_str}_{draw_code}"
 
     data = {
@@ -627,49 +514,45 @@ def save_result_doc(
 
     db.collection("Results").document(doc_id).set(data, merge=True)
 
-    print(f"[FIRESTORE OK] Results/{doc_id}")
+    print(f"[FIRESTORE OK] Results/{doc_id}", flush=True)
 
 
 def send_notification(date_str, draw_label, draw_code):
-    try:
-        message = messaging.Message(
-            topic="all_users",
-            notification=messaging.Notification(
-                title="WB Lottery Result – LIVE",
-                body=f"{draw_label} Result Published ({date_str})",
+    message = messaging.Message(
+        topic="all_users",
+        notification=messaging.Notification(
+            title="WB Lottery Result – LIVE",
+            body=f"{draw_label} Result Published ({date_str})",
+        ),
+        data={
+            "type": "result_published",
+            "date": date_str,
+            "time": draw_label,
+            "draw_code": draw_code,
+        },
+        android=messaging.AndroidConfig(
+            priority="high",
+            notification=messaging.AndroidNotification(
+                channel_id="default_channel",
+                sound="default",
             ),
-            data={
-                "type": "result_published",
-                "date": date_str,
-                "time": draw_label,
-                "draw_code": draw_code,
-            },
-            android=messaging.AndroidConfig(
-                priority="high",
-                notification=messaging.AndroidNotification(
-                    channel_id="default_channel",
-                    sound="default",
-                ),
-            ),
-        )
+        ),
+    )
 
-        response = messaging.send(message)
-        print(f"[TOPIC NOTIFICATION SENT] {response}")
-
-    except Exception as e:
-        print(f"[NOTIFICATION ERROR] {e}")
-        raise
+    response = messaging.send(message)
+    print(f"[TOPIC NOTIFICATION SENT] {response}", flush=True)
 
 
-def process_draw(date_str, draw_label, page_url):
+def process_draw(default_date_str, draw_label, page_url):
     draw_code = DRAW_CODES[draw_label]
 
-    print(f"\n==== {draw_label} ====")
-    print(f"[FETCH] {page_url}")
+    print(f"\n==== {draw_label} ====", flush=True)
+    print(f"[FETCH] {page_url}", flush=True)
 
     html = fetch_html(page_url)
     pdfs, posters = extract_sources(html, page_url, draw_label)
 
+    date_str = default_date_str
     pdf_public_url = ""
     poster_public_url = ""
     parsed_data = empty_parsed_data()
@@ -677,52 +560,50 @@ def process_draw(date_str, draw_label, page_url):
     for pdf in pdfs:
         try:
             content, ext, content_type = download(pdf)
-
-            print(f"[CHECK PDF] {pdf} | ext={ext} | size={len(content)}")
+            print(f"[CHECK PDF] {pdf} | ext={ext} | size={len(content)}", flush=True)
 
             if ext == "pdf":
-                parsed_data = extract_lottery_data_from_pdf(content)
+                temp_parsed = extract_lottery_data_from_pdf(content)
+                detected_date = temp_parsed.get("result_date", "")
 
-                detected_date = parsed_data.get("result_date", "")
+                if detected_date:
+                    print(f"[PDF DATE] {detected_date}", flush=True)
+                    date_str = detected_date
 
-                if detected_date and detected_date != date_str:
-                    print(f"[SKIP OLD PDF] detected={detected_date}, today={date_str}")
-                    continue
+                parsed_data = temp_parsed
 
                 path = f"results/{date_str}/{draw_code}_pdf.pdf"
                 pdf_public_url = upload_to_storage(path, content, content_type)
                 break
 
         except Exception as e:
-            print(f"[PDF SKIP] {pdf} | {e}")
+            print(f"[PDF SKIP] {pdf} | {e}", flush=True)
 
     for poster in posters:
         try:
             content, ext, content_type = download(poster)
-
-            print(f"[CHECK POSTER] {poster} | ext={ext} | size={len(content)}")
+            print(f"[CHECK POSTER] {poster} | ext={ext} | size={len(content)}", flush=True)
 
             if ext in ["jpg", "png", "webp"] and len(content) > 3000:
+                if not pdf_public_url:
+                    temp_parsed = extract_lottery_data_from_image(content)
+                    detected_date = temp_parsed.get("result_date", "")
+
+                    if detected_date:
+                        print(f"[POSTER DATE] {detected_date}", flush=True)
+                        date_str = detected_date
+
+                    parsed_data = temp_parsed
+
                 path = f"results/{date_str}/{draw_code}_poster.{ext}"
                 poster_public_url = upload_to_storage(path, content, content_type)
-
-                if not pdf_public_url:
-                    parsed_data = extract_lottery_data_from_image(content)
-
-                    detected_date = parsed_data.get("result_date", "")
-
-                    if detected_date and detected_date != date_str:
-                        print(f"[SKIP OLD POSTER] detected={detected_date}, today={date_str}")
-                        poster_public_url = ""
-                        continue
-
                 break
 
         except Exception as e:
-            print(f"[POSTER SKIP] {poster} | {e}")
+            print(f"[POSTER SKIP] {poster} | {e}", flush=True)
 
     if not pdf_public_url and not poster_public_url:
-        print(f"[MISS] No valid PDF/poster for {draw_label}")
+        print(f"[MISS] No valid PDF/poster for {draw_label}", flush=True)
         return False
 
     already_notified = result_already_notified(date_str, draw_code)
@@ -739,7 +620,7 @@ def process_draw(date_str, draw_label, page_url):
     )
 
     if already_notified:
-        print(f"[NOTIFICATION SKIP] already sent for {date_str}_{draw_code}")
+        print(f"[NOTIFICATION SKIP] already sent for {date_str}_{draw_code}", flush=True)
     else:
         send_notification(date_str, draw_label, draw_code)
         mark_notification_sent(date_str, draw_code)
@@ -758,12 +639,41 @@ def run():
     print("[INIT FIREBASE OK]", flush=True)
 
     date_str = today_date()
-    success = 0
     allowed_draws = get_allowed_draws()
+    success = 0
 
     print(f"[DATE] {date_str}", flush=True)
     print(f"[BUCKET] {BUCKET_NAME}", flush=True)
     print(f"[ALLOWED DRAWS] {allowed_draws}", flush=True)
-    if __name__ == "__main__":
-        run()
 
+    if not allowed_draws:
+        print("[SKIP] Current time is not result sync time", flush=True)
+        return
+
+    for draw_label, page_urls in DRAW_PAGES.items():
+        draw_code = DRAW_CODES[draw_label]
+
+        if draw_code not in allowed_draws:
+            print(f"[SKIP DRAW] {draw_label}", flush=True)
+            continue
+
+        ok = False
+
+        for page_url in page_urls:
+            try:
+                ok = process_draw(date_str, draw_label, page_url)
+                if ok:
+                    break
+            except Exception as e:
+                import traceback
+                print(f"[ERROR] {draw_label} | {page_url}: {e}", flush=True)
+                traceback.print_exc()
+
+        if ok:
+            success += 1
+
+    print(f"\n[DONE] synced={success}", flush=True)
+
+
+if __name__ == "__main__":
+    run()
