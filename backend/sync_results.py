@@ -34,7 +34,6 @@ HEADERS = {
 
 def init_firebase():
     firebase_key = os.environ.get("FIREBASE_KEY")
-
     if not firebase_key:
         raise RuntimeError("FIREBASE_KEY environment variable missing")
 
@@ -55,7 +54,6 @@ def today_date():
 
 def is_bad_url(url: str) -> bool:
     url = (url or "").lower()
-
     bad_words = [
         "logo",
         "banner",
@@ -74,7 +72,6 @@ def is_bad_url(url: str) -> bool:
         "icon",
         "favicon",
     ]
-
     return any(word in url for word in bad_words)
 
 
@@ -87,17 +84,14 @@ def detect_file_type(content: bytes):
         return "png", "image/png"
     if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
         return "webp", "image/webp"
-
     return None, None
 
 
 def download(url: str):
     response = requests.get(url, headers=HEADERS, timeout=40)
     response.raise_for_status()
-
     content = response.content
     ext, content_type = detect_file_type(content)
-
     return content, ext, content_type
 
 
@@ -175,15 +169,13 @@ def extract_sources(html: str, page_url: str):
             src = img.get(attr)
 
             if src:
-                src = urljoin(page_url, src.strip())
-                posters.append(src)
+                posters.append(urljoin(page_url, src.strip()))
 
         srcset = img.get("srcset") or img.get("data-srcset")
 
         if srcset:
             for part in srcset.split(","):
                 src = part.strip().split(" ")[0].strip()
-
                 if src:
                     posters.append(urljoin(page_url, src))
 
@@ -441,6 +433,7 @@ def save_result_doc(
         "parse_confidence": parsed_data.get("parse_confidence", 0),
         "needs_review": parsed_data.get("needs_review", True),
         "parsed_source": parsed_data.get("parsed_source", "none"),
+        "notification_sent": True,
         "updated_at": firestore.SERVER_TIMESTAMP,
         "created_at": firestore.SERVER_TIMESTAMP,
     }
@@ -452,51 +445,34 @@ def save_result_doc(
 
 
 def send_notification(date_str, draw_label, draw_code):
-    tokens = []
-
     try:
-        docs = db.collection("DeviceTokens").stream()
+        message = messaging.Message(
+            topic="all_users",
+            notification=messaging.Notification(
+                title="WB Lottery Result – LIVE",
+                body=f"{draw_label} Result Published ({date_str})",
+            ),
+            data={
+                "type": "result_published",
+                "date": date_str,
+                "time": draw_label,
+                "draw_code": draw_code,
+            },
+            android=messaging.AndroidConfig(
+                priority="high",
+                notification=messaging.AndroidNotification(
+                    channel_id="default_channel",
+                    sound="default",
+                ),
+            ),
+        )
 
-        for doc in docs:
-            data = doc.to_dict() or {}
-            token = data.get("token")
+        response = messaging.send(message)
 
-            if token:
-                tokens.append(token)
+        print(f"[TOPIC NOTIFICATION SENT] {response}")
 
     except Exception as e:
-        print(f"[NOTIFICATION WARN] token read failed: {e}")
-        return
-
-    if not tokens:
-        print("[NOTIFICATION] No tokens found")
-        return
-
-    sent = 0
-
-    for token in tokens:
-        try:
-            msg = messaging.Message(
-                token=token,
-                notification=messaging.Notification(
-                    title="WB Lottery Result – Live",
-                    body=f"{draw_label} result published for {date_str}",
-                ),
-                data={
-                    "type": "result_published",
-                    "date": date_str,
-                    "time": draw_label,
-                    "draw_code": draw_code,
-                },
-            )
-
-            messaging.send(msg)
-            sent += 1
-
-        except Exception as e:
-            print(f"[NOTIFICATION WARN] {e}")
-
-    print(f"[NOTIFICATION OK] sent={sent}")
+        print(f"[NOTIFICATION ERROR] {e}")
 
 
 def process_draw(date_str, draw_label, page_url):
