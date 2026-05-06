@@ -1,12 +1,14 @@
-      - name: Run Result Sync
-        env:
-          FORCE_DRAW: ${{ github.event.inputs.draw == 'AUTO' && '' || github.event.inputs.draw }}
-        run: |
+ - name: Run Result Sync
+   env:
+      FORCE_DRAW: ${{ github.event.inputs.draw == 'AUTO' && '' || github.event.inputs.draw }}run: |
           echo "DRAW SELECTED = $FORCE_DRAW"
           echo "CHECK FILE EXISTS"
           ls -la backend
+
           echo "PYTHON COMPILE CHECK"
           python -m py_compile backend/sync_results.py
+
           echo "START PYTHON SCRIPT"
           python -u backend/sync_results.py
+
           echo "SCRIPT FINISHED"
