@@ -2,13 +2,8 @@ name: Auto Result Sync
 
 on:
   schedule:
-    # 1 PM -> India Time 1:15 / 1:20 / 1:25
     - cron: "45,50,55 7 * * *"
-
-    # 6 PM -> India Time 6:15 / 6:20 / 6:25
     - cron: "45,50,55 12 * * *"
-
-    # 8 PM -> India Time 8:15 / 8:20 / 8:25
     - cron: "45,50,55 14 * * *"
 
   workflow_dispatch:
