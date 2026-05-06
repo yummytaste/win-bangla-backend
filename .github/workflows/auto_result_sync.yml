@@ -2,18 +2,24 @@ name: Auto Result Sync
 
 on:
   schedule:
+    # India time 1:15 PM, 1:20 PM, 1:25 PM
     - cron: "45,50,55 7 * * *"
-    - cron: "45,50,55 12 * * *"
-    - cron: "45,50,55 14 * * *"
-  workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  TZ: Asia/Kolkata
+    # India time 6:15 PM, 6:20 PM, 6:25 PM
+    - cron: "45,50,55 12 * * *"
+
+    # India time 8:15 PM, 8:20 PM, 8:25 PM
+    - cron: "45,50,55 14 * * *"
+
+  workflow_dispatch:
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      TZ: Asia/Kolkata
 
     steps:
       - name: Checkout code
@@ -22,19 +28,23 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install system packages
         run: |
           sudo apt-get update
           sudo apt-get install -y tesseract-ocr poppler-utils
 
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
 
-      - name: Check Firebase Secret
+      - name: Run Python Sync
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          python backend/sync_results.py      - name: Check Firebase Secret
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
