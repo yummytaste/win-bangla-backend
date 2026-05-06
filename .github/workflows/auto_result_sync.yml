@@ -1,7 +1,54 @@
- - name: Run Result Sync
-   env:
-      FORCE_DRAW: ${{ github.event.inputs.draw == 'AUTO' && '' || github.event.inputs.draw }}run: |
+name: Auto Result Sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      draw:
+        description: "Select Draw"
+        required: true
+        default: "AUTO"
+        type: choice
+        options:
+          - AUTO
+          - 1PM
+          - 6PM
+          - 8PM
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    env:
+      TZ: Asia/Kolkata
+      PYTHONUNBUFFERED: 1
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install System Packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr poppler-utils
+
+      - name: Install Python Packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Run Result Sync
+        env:
+          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY }}
+          FORCE_DRAW: ${{ github.event.inputs.draw == 'AUTO' && '' || github.event.inputs.draw }}
+
+        run: |
           echo "DRAW SELECTED = $FORCE_DRAW"
+
           echo "CHECK FILE EXISTS"
           ls -la backend
 
