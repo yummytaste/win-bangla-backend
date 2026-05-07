@@ -2,9 +2,17 @@ name: Auto Result Sync
 
 on:
   schedule:
+    # 1 PM result retry: 1:15 PM to 1:45 PM IST
     - cron: "45,50,55 7 * * *"
+    - cron: "0,5,10,15 8 * * *"
+
+    # 6 PM result retry: 6:15 PM to 6:45 PM IST
     - cron: "45,50,55 12 * * *"
+    - cron: "0,5,10,15 13 * * *"
+
+    # 8 PM result retry: 8:15 PM to 8:45 PM IST
     - cron: "45,50,55 14 * * *"
+    - cron: "0,5,10,15 15 * * *"
 
   workflow_dispatch:
     inputs:
