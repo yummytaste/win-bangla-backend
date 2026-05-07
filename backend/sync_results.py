@@ -48,7 +48,6 @@ HEADERS = {
     "Referer": BASE_URL,
 }
 
-
 db = None
 bucket = None
 
@@ -178,34 +177,80 @@ def filter_by_draw(urls, draw_label):
 def extract_sources(html, page_url, draw_label):
     pdfs = []
     posters = []
-
     soup = BeautifulSoup(html, "html.parser")
 
-    pdfs.extend(re.findall(r'https?://[^"\']+?\.pdf(?:\?[^"\']*)?', html, flags=re.I))
-    posters.extend(re.findall(r'https?://[^"\']+?\.(?:jpg|jpeg|png|webp)(?:\?[^"\']*)?', html, flags=re.I))
+    # Full direct URLs inside HTML/script/json
+    pdfs.extend(
+        re.findall(
+            r'https?://[^\s"\'<>]+?\.pdf(?:\?[^\s"\'<>]*)?',
+            html,
+            flags=re.I,
+        )
+    )
+    posters.extend(
+        re.findall(
+            r'https?://[^\s"\'<>]+?\.(?:jpg|jpeg|png|webp)(?:\?[^\s"\'<>]*)?',
+            html,
+            flags=re.I,
+        )
+    )
 
-    for a in soup.find_all("a", href=True):
-        href = urljoin(page_url, a.get("href", "").strip())
-        low = href.lower()
+    # Relative WordPress uploads links
+    relative_files = re.findall(
+        r'(?:/wp-content/uploads/[^\s"\'<>]+?\.(?:pdf|jpg|jpeg|png|webp)(?:\?[^\s"\'<>]*)?)',
+        html,
+        flags=re.I,
+    )
 
+    for item in relative_files:
+        full = urljoin(page_url, item)
+        low = full.lower()
         if ".pdf" in low:
-            pdfs.append(href)
+            pdfs.append(full)
+        else:
+            posters.append(full)
 
-        if any(ext in low for ext in [".jpg", ".jpeg", ".png", ".webp"]):
-            posters.append(href)
+    # All possible HTML attributes
+    for tag in soup.find_all(True):
+        for attr in [
+            "href",
+            "src",
+            "data-src",
+            "data-lazy-src",
+            "data-original",
+            "data-full-url",
+            "data-large_image",
+            "data-bg",
+            "data-background",
+            "data-link",
+            "data-url",
+            "content",
+        ]:
+            value = tag.get(attr)
+            if not value:
+                continue
 
-    for img in soup.find_all("img"):
-        for attr in ["src", "data-src", "data-lazy-src", "data-original", "data-full-url", "data-large_image"]:
-            src = img.get(attr)
-            if src:
-                posters.append(urljoin(page_url, src.strip()))
+            full = urljoin(page_url, value.strip())
+            low = full.lower()
 
-        srcset = img.get("srcset") or img.get("data-srcset")
+            if ".pdf" in low:
+                pdfs.append(full)
+
+            if any(ext in low for ext in [".jpg", ".jpeg", ".png", ".webp"]):
+                posters.append(full)
+
+        srcset = tag.get("srcset") or tag.get("data-srcset")
         if srcset:
             for part in srcset.split(","):
                 src = part.strip().split(" ")[0].strip()
-                if src:
-                    posters.append(urljoin(page_url, src))
+                if not src:
+                    continue
+
+                full = urljoin(page_url, src)
+                low = full.lower()
+
+                if any(ext in low for ext in [".jpg", ".jpeg", ".png", ".webp"]):
+                    posters.append(full)
 
     pdfs = unique_list([p for p in pdfs if ".pdf" in p.lower()])
     posters = unique_list([
@@ -218,8 +263,8 @@ def extract_sources(html, page_url, draw_label):
     posters = filter_by_draw(posters, draw_label)
 
     print(f"[CANDIDATES] pdf={len(pdfs)}, poster={len(posters)}", flush=True)
-    print("[PDF]", pdfs[:5], flush=True)
-    print("[POSTER]", posters[:5], flush=True)
+    print("[PDF]", pdfs[:10], flush=True)
+    print("[POSTER]", posters[:10], flush=True)
 
     return pdfs, posters
 
