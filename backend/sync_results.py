@@ -25,6 +25,7 @@ DRAW_PAGES = {
         "https://lotterysambadresult.in/",
     ],
     "6 PM": [
+        "https://lotterysambadresult.in/nagaland-state-lottery-sambad-today-7-pm-result.html",
         "https://lotterysambadresult.in/nagaland-state-lottery-sambad-today-result-6-pm.html",
         "https://lotterysambadresult.in/lottery-sambad-today-result-06-00-pm.html",
         "https://lotterysambadresult.in/lottery-sambad-today-result-6-00-pm.html",
@@ -44,8 +45,21 @@ DRAW_CODES = {
 }
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 AppleWebKit/537.36 Chrome/120 Safari/537.36",
-    "Referer": BASE_URL,
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/136.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,"
+        "application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9,bn;q=0.8",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Referer": "https://www.google.com/",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
 }
 
 db = None
@@ -129,9 +143,24 @@ def upload_to_storage(path, content, content_type):
 
 
 def fetch_html(url):
-    response = requests.get(url, headers=HEADERS, timeout=35)
+    session = requests.Session()
+
+    response = session.get(
+        url,
+        headers=HEADERS,
+        timeout=60,
+        allow_redirects=True,
+    )
     response.raise_for_status()
-    return response.text
+
+    html = response.text
+
+    print("========== HTML PREVIEW ==========", flush=True)
+    print(html[:5000], flush=True)
+    print("========== HTML END ==========", flush=True)
+    print("[HTML LENGTH]", len(html), flush=True)
+
+    return html
 
 
 def unique_list(items):
@@ -179,6 +208,8 @@ def extract_sources(html, page_url, draw_label):
     posters = []
     soup = BeautifulSoup(html, "html.parser")
 
+    print("[HTML LENGTH]", len(html), flush=True)
+
     # Full direct URLs inside HTML/script/json
     pdfs.extend(
         re.findall(
@@ -195,6 +226,22 @@ def extract_sources(html, page_url, draw_label):
         )
     )
 
+    # CSS style: url(...)
+    css_urls = re.findall(
+        r'url\((["\']?)([^)\'"]+\.(?:jpg|jpeg|png|webp|pdf)(?:\?[^)\'"]*)?)\1\)',
+        html,
+        flags=re.I,
+    )
+
+    for _, item in css_urls:
+        full = urljoin(page_url, item.strip())
+        low = full.lower()
+
+        if ".pdf" in low:
+            pdfs.append(full)
+        else:
+            posters.append(full)
+
     # Relative WordPress uploads links
     relative_files = re.findall(
         r'(?:/wp-content/uploads/[^\s"\'<>]+?\.(?:pdf|jpg|jpeg|png|webp)(?:\?[^\s"\'<>]*)?)',
@@ -205,9 +252,29 @@ def extract_sources(html, page_url, draw_label):
     for item in relative_files:
         full = urljoin(page_url, item)
         low = full.lower()
+
         if ".pdf" in low:
             pdfs.append(full)
         else:
+            posters.append(full)
+
+    # Relative image/pdf path without /wp-content
+    relative_simple = re.findall(
+        r'(?:(?:\.\./|/)?[A-Za-z0-9_./%-]+?\.(?:pdf|jpg|jpeg|png|webp)(?:\?[^\s"\'<>]*)?)',
+        html,
+        flags=re.I,
+    )
+
+    for item in relative_simple:
+        full = urljoin(page_url, item)
+        low = full.lower()
+
+        if is_bad_url(low):
+            continue
+
+        if ".pdf" in low:
+            pdfs.append(full)
+        elif any(ext in low for ext in [".jpg", ".jpeg", ".png", ".webp"]):
             posters.append(full)
 
     # All possible HTML attributes
@@ -225,8 +292,10 @@ def extract_sources(html, page_url, draw_label):
             "data-link",
             "data-url",
             "content",
+            "poster",
         ]:
             value = tag.get(attr)
+
             if not value:
                 continue
 
@@ -239,10 +308,29 @@ def extract_sources(html, page_url, draw_label):
             if any(ext in low for ext in [".jpg", ".jpeg", ".png", ".webp"]):
                 posters.append(full)
 
+        style = tag.get("style")
+        if style:
+            style_urls = re.findall(
+                r'url\((["\']?)([^)\'"]+\.(?:jpg|jpeg|png|webp|pdf)(?:\?[^)\'"]*)?)\1\)',
+                style,
+                flags=re.I,
+            )
+
+            for _, item in style_urls:
+                full = urljoin(page_url, item.strip())
+                low = full.lower()
+
+                if ".pdf" in low:
+                    pdfs.append(full)
+                elif any(ext in low for ext in [".jpg", ".jpeg", ".png", ".webp"]):
+                    posters.append(full)
+
         srcset = tag.get("srcset") or tag.get("data-srcset")
+
         if srcset:
             for part in srcset.split(","):
                 src = part.strip().split(" ")[0].strip()
+
                 if not src:
                     continue
 
@@ -267,7 +355,6 @@ def extract_sources(html, page_url, draw_label):
     print("[POSTER]", posters[:10], flush=True)
 
     return pdfs, posters
-
 
 def empty_parsed_data():
     return {
