@@ -50,7 +50,8 @@ jobs:
       - name: Run Result Sync
         env:
           FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          FORCE_DRAW: ${{ github.event.inputs.draw == 'AUTO' && '' || github.event.inputs.draw }}
+          FORCE_DRAW: ${{ github.event.inputs.draw }}
+
         run: |
           echo "DRAW SELECTED = $FORCE_DRAW"
 
