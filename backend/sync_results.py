@@ -85,7 +85,7 @@ def today_date():
 
 
 def get_allowed_draws():
-    force_draw = os.environ.get("FORCE_DRAW", "").strip().upper()
+    force_draw = os.environ.get("FORCE_DRAW", "AUTO").strip().upper()
 
     if force_draw in ["1PM", "6PM", "8PM"]:
         return [force_draw]
@@ -94,14 +94,21 @@ def get_allowed_draws():
     hour = now.hour
     minute = now.minute
 
-    if hour == 13 and minute in [15, 20, 25]:
-        return ["1PM"]
-    if hour == 18 and minute in [15, 20, 25]:
-        return ["6PM"]
-    if hour == 20 and minute in [15, 20, 25]:
-        return ["8PM"]
+    allowed = []
 
-    return []
+    # 11:00 AM থেকে 10:59 PM পর্যন্ত 1PM check হবে
+    if 11 <= hour <= 22:
+        allowed.append("1PM")
+
+    # 6:00 PM থেকে 10:59 PM পর্যন্ত 6PM check হবে
+    if 18 <= hour <= 22:
+        allowed.append("6PM")
+
+    # 8:00 PM থেকে 10:59 PM পর্যন্ত 8PM check হবে
+    if 20 <= hour <= 22:
+        allowed.append("8PM")
+
+    return allowed
 
 
 def is_bad_url(url):
@@ -210,7 +217,6 @@ def extract_sources(html, page_url, draw_label):
 
     print("[HTML LENGTH]", len(html), flush=True)
 
-    # Full direct URLs inside HTML/script/json
     pdfs.extend(
         re.findall(
             r'https?://[^\s"\'<>]+?\.pdf(?:\?[^\s"\'<>]*)?',
@@ -226,7 +232,6 @@ def extract_sources(html, page_url, draw_label):
         )
     )
 
-    # CSS style: url(...)
     css_urls = re.findall(
         r'url\((["\']?)([^)\'"]+\.(?:jpg|jpeg|png|webp|pdf)(?:\?[^)\'"]*)?)\1\)',
         html,
@@ -242,7 +247,6 @@ def extract_sources(html, page_url, draw_label):
         else:
             posters.append(full)
 
-    # Relative WordPress uploads links
     relative_files = re.findall(
         r'(?:/wp-content/uploads/[^\s"\'<>]+?\.(?:pdf|jpg|jpeg|png|webp)(?:\?[^\s"\'<>]*)?)',
         html,
@@ -258,7 +262,6 @@ def extract_sources(html, page_url, draw_label):
         else:
             posters.append(full)
 
-    # Relative image/pdf path without /wp-content
     relative_simple = re.findall(
         r'(?:(?:\.\./|/)?[A-Za-z0-9_./%-]+?\.(?:pdf|jpg|jpeg|png|webp)(?:\?[^\s"\'<>]*)?)',
         html,
@@ -277,7 +280,6 @@ def extract_sources(html, page_url, draw_label):
         elif any(ext in low for ext in [".jpg", ".jpeg", ".png", ".webp"]):
             posters.append(full)
 
-    # All possible HTML attributes
     for tag in soup.find_all(True):
         for attr in [
             "href",
@@ -355,6 +357,7 @@ def extract_sources(html, page_url, draw_label):
     print("[POSTER]", posters[:10], flush=True)
 
     return pdfs, posters
+
 
 def empty_parsed_data():
     return {
